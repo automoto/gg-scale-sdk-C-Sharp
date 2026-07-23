@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- netstandard2.1 is the Unity-compatible target (Unity 2021.3+);
+         net8.0 serves MonoGame, Godot 4, and plain .NET consumers. -->
+    <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
+    <RootNamespace>GGScale</RootNamespace>
+    <AssemblyName>GGScale</AssemblyName>
+    <!-- Public surface must be documented: this is an SDK. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>GGScale</PackageId>
+    <Description>Official C# client for the ggscale API. Engine-agnostic: Unity, MonoGame, Godot, and plain .NET.</Description>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Zero runtime dependencies by design: nothing beyond the base class
+       library may be referenced here. See CLAUDE.md. -->
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="GGScale.Tests" />
+    <InternalsVisibleTo Include="GGScale.IntegrationTests" />
+  </ItemGroup>
+
+</Project>

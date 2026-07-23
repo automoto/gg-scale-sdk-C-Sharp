@@ -1,0 +1,14 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)..'))" />
+
+  <PropertyGroup>
+    <!-- IDE0005 (unused usings) requires the doc file; tests don't need
+         XML docs themselves, so CS1591 is silenced. CA1707 is silenced
+         because test names use underscores by convention
+         (Method_does_x_when_y). CA2007 (ConfigureAwait) is silenced
+         because xUnit has no synchronization context; it remains an
+         error in src/. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CA1707;CA2007</NoWarn>
+  </PropertyGroup>
+</Project>
