@@ -8,9 +8,9 @@ The GGScale C# SDK is the official, engine-agnostic client for the [ggscale](htt
 - Account linking, player profiles, storage, friends, invites, and presence
 - Remote config, player discovery, friend codes, and remote-address exchange
 - Leaderboards, matchmaking, public sessions, join codes, and P2P signaling
-- Peer to peer gameplay support with support for relays when needed. TURN/STUN support provided.
+- Peer-to-peer gameplay with TURN/STUN relay support
 - Managed realtime events with automatic WebSocket reconnection
-- Dedicated server support through a plugin based  fleet discovery, and game-server APIs
+- Dedicated server support through plugin-based fleet discovery and game-server APIs
 
 ## SDK
 
@@ -89,6 +89,14 @@ var profile = await client.Profile.GetAsync(cancellationToken);
 ```
 
 Other login strategies are available through `EmailPasswordAuth`, `CustomTokenAuth`, `SteamAuth`, and `OfflineAuth`. After login, call `DialRealtimeAsync` for realtime matchmaking, invite, and presence events.
+
+## API contract
+
+The canonical API contract is the
+[OpenAPI specification in the source ggscale repository](https://github.com/automoto/gg-scale/blob/main/openapi.yaml).
+Use that specification when implementing or verifying SDK behavior;
+copies in client SDK repositories can become stale and should not be
+treated as authoritative.
 
 ## License
 
