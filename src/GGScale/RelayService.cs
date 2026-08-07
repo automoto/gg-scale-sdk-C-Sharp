@@ -11,13 +11,14 @@ namespace GGScale
     /// </summary>
     public sealed class RelayCredentials
     {
-        internal RelayCredentials(string username, string password, long ttl, string realm, IReadOnlyList<string> urls)
+        internal RelayCredentials(string username, string password, long ttl, string realm, IReadOnlyList<string> urls, IReadOnlyList<string> stunUrls)
         {
             Username = username;
             Password = password;
             Ttl = ttl;
             Realm = realm;
             Urls = urls;
+            StunUrls = stunUrls;
         }
 
         /// <summary>TURN username.</summary>
@@ -35,23 +36,32 @@ namespace GGScale
         /// <summary>Relay URLs (turn:/turns: URIs).</summary>
         public IReadOnlyList<string> Urls { get; }
 
+        /// <summary>STUN server URLs for direct connectivity checks; empty when none.</summary>
+        public IReadOnlyList<string> StunUrls { get; }
+
         internal static RelayCredentials FromJson(JsonValue v)
         {
-            var urls = new List<string>();
-            var arr = v.Opt("urls");
-            if (arr != null)
-            {
-                foreach (var u in arr.Items)
-                {
-                    urls.Add(u.AsString());
-                }
-            }
             return new RelayCredentials(
                 v.OptString("username") ?? string.Empty,
                 v.OptString("password") ?? string.Empty,
                 v.OptLong("ttl"),
                 v.OptString("realm") ?? string.Empty,
-                urls);
+                StringList(v, "urls"),
+                StringList(v, "stun_urls"));
+        }
+
+        private static List<string> StringList(JsonValue v, string key)
+        {
+            var list = new List<string>();
+            var arr = v.Opt(key);
+            if (arr != null && arr.Kind == JsonKind.Array)
+            {
+                foreach (var item in arr.Items)
+                {
+                    list.Add(item.AsString());
+                }
+            }
+            return list;
         }
     }
 
@@ -85,6 +95,7 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/relay/credentials",
+                Operation = "POST /v1/relay/credentials",
             };
             if (!string.IsNullOrEmpty(matchId))
             {

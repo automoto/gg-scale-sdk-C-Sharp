@@ -36,6 +36,45 @@ namespace GGScale
         /// <summary>Optional If-Match value (storage OCC).</summary>
         public string? IfMatch { get; set; }
 
+        /// <summary>Optional If-None-Match validator for conditional GETs (/v1/config).</summary>
+        public string? IfNoneMatch { get; set; }
+
+        /// <summary>
+        /// The route template for telemetry, e.g. "GET /v1/storage/objects/{key}".
+        /// Never a raw URL — path parameters stay as placeholders.
+        /// </summary>
+        public string Operation { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Marks a POST/PATCH request as safe to replay so the retry layer
+        /// may retry it. GET/HEAD/PUT/DELETE are replayable by default.
+        /// </summary>
+        public bool Idempotent { get; set; }
+
+        /// <summary>
+        /// The client-generated X-Request-Id, assigned once per logical call
+        /// and kept stable across retry attempts. Transports send it as the
+        /// X-Request-Id header.
+        /// </summary>
+        public string? RequestId { get; internal set; }
+
+        /// <summary>
+        /// When this logical call started; stamped once by the retry layer
+        /// so duration and the overall deadline span the 401
+        /// refresh-and-retry re-invocation.
+        /// </summary>
+        internal DateTimeOffset? TelemetryStart { get; set; }
+
+        /// <summary>Attempts completed so far across re-invocations.</summary>
+        internal int TelemetryAttempts { get; set; }
+
+        /// <summary>
+        /// Set while the client will refresh-and-retry a 401, so the retry
+        /// layer defers the completion record instead of reporting a
+        /// failure that is about to be retried.
+        /// </summary>
+        internal bool RetryOn401Pending { get; set; }
+
         /// <summary>Appends a query parameter.</summary>
         public void AddQuery(string name, string value)
         {
@@ -66,13 +105,15 @@ namespace GGScale
 
     /// <summary>
     /// Sends a single request to the ggscale API. Implementations parse a
-    /// 2xx JSON response into a <see cref="JsonValue"/> (JsonValue.Null for
-    /// empty bodies) and throw <see cref="GGScaleException"/> for any
-    /// non-2xx response. Implementations must be safe for concurrent use.
+    /// success response into a <see cref="GGResponse"/> (JsonValue.Null for
+    /// empty and 304 bodies) and throw <see cref="GGScaleException"/> for
+    /// any failure, classifying transport-level failures via
+    /// <see cref="GGFailureKind"/>. Implementations must be safe for
+    /// concurrent use.
     /// </summary>
     public interface ITransport
     {
-        /// <summary>Performs the request and returns the parsed response body.</summary>
-        Task<JsonValue> CallAsync(GGRequest request, CancellationToken cancellationToken);
+        /// <summary>Performs the request and returns the response envelope.</summary>
+        Task<GGResponse> CallAsync(GGRequest request, CancellationToken cancellationToken);
     }
 }

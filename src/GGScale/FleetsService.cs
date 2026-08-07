@@ -143,6 +143,7 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/fleets/heartbeat",
+                Operation = "POST /v1/fleets/heartbeat",
                 ApiKey = _client.ApiKey,
                 Body = heartbeat.ToJson(),
             }, cancellationToken);
@@ -159,6 +160,7 @@ namespace GGScale
             {
                 Method = "GET",
                 Path = "/v1/fleets/" + Uri.EscapeDataString(fleet) + "/servers",
+                Operation = "GET /v1/fleets/{fleet}/servers",
             }, cancellationToken).ConfigureAwait(false);
             var servers = new List<GameServerInfo>();
             var arr = resp.Opt("servers");

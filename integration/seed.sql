@@ -10,8 +10,10 @@
 --
 -- Idempotent: safe to re-run against a stack that is already seeded.
 
+-- tier is a numbered integer class since server migration 0009
+-- (0 = the former "free" tier).
 INSERT INTO tenants (id, name, tier)
-VALUES (1, 'integration', 'free')
+VALUES (1, 'integration', 0)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO projects (id, tenant_id, name)

@@ -78,3 +78,21 @@ engine constraints below are hard requirements, not preferences.
 - JSON field names on the wire are snake_case; C# properties are
   PascalCase. The mapping lives in the hand-written converters —
   never rename a wire field to "clean it up".
+
+## Architecture notes (since 0.2.0)
+
+- `ITransport.CallAsync` returns a `GGResponse` envelope (status,
+  parsed body, ETag, X-Request-Id) — not a bare `JsonValue`.
+- `GGScaleClient` wraps the transport in the internal
+  `RetryingTransport` (full-jitter retries, Retry-After, overall
+  deadline, telemetry, stable per-call X-Request-Id). Services and
+  authenticators built from `client.Transport` share that behavior.
+- Failure classes live on `GGScaleException.Kind` (`GGFailureKind`);
+  caller cancellation stays `OperationCanceledException`.
+- Deterministic time goes through the internal `IGGClock`
+  (`GGScaleClientOptions.Clock` is test-only); never call
+  `Task.Delay`/`DateTimeOffset.UtcNow` directly in retry, refresh, or
+  reconnect logic.
+- The realtime queue is the internal `AsyncBoundedQueue<T>`
+  (drop-oldest). System.Threading.Channels is NOT in the
+  netstandard2.1 BCL — do not reference it.

@@ -28,6 +28,7 @@ namespace GGScale
             {
                 Method = "PUT",
                 Path = "/v1/presence",
+                Operation = "PUT /v1/presence",
                 Body = body,
             }, cancellationToken);
         }

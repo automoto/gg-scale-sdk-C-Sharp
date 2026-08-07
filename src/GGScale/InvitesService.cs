@@ -73,6 +73,7 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/invite",
+                Operation = "POST /v1/invite",
                 Body = JsonValue.NewObject()
                     .Set("to_email", JsonValue.Of(toEmail))
                     .Set("session_id", JsonValue.Of(sessionId)),
@@ -87,6 +88,7 @@ namespace GGScale
             {
                 Method = "GET",
                 Path = "/v1/invite",
+                Operation = "GET /v1/invite",
             }, cancellationToken).ConfigureAwait(false);
             var invites = new List<Invite>();
             var arr = resp.Opt("invites");
@@ -107,6 +109,7 @@ namespace GGScale
             {
                 Method = "DELETE",
                 Path = "/v1/invite/" + inviteId.ToString(CultureInfo.InvariantCulture),
+                Operation = "DELETE /v1/invite/{id}",
             }, cancellationToken);
         }
     }

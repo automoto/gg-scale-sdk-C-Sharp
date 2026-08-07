@@ -27,6 +27,43 @@ namespace GGScale
         /// for persisting sessions across restarts.
         /// </summary>
         public Action<Session?>? OnSessionUpdate { get; set; }
+
+        /// <summary>
+        /// User-Agent header override. Null uses
+        /// "ggscale-csharp/&lt;sdk-version&gt;". Ignored when
+        /// <see cref="Transport"/> is supplied.
+        /// </summary>
+        public string? UserAgent { get; set; }
+
+        /// <summary>
+        /// Per-attempt HTTP timeout. Null uses 30 seconds. Ignored when
+        /// <see cref="Transport"/> is supplied.
+        /// </summary>
+        public TimeSpan? Timeout { get; set; }
+
+        /// <summary>
+        /// Deadline for one logical call including every retry attempt and
+        /// backoff wait. Null uses 100 seconds.
+        /// </summary>
+        public TimeSpan? OverallTimeout { get; set; }
+
+        /// <summary>
+        /// Maximum response body size in bytes. Null uses 4 MiB. Ignored
+        /// when <see cref="Transport"/> is supplied.
+        /// </summary>
+        public long? MaxResponseBytes { get; set; }
+
+        /// <summary>
+        /// Structured observability hook. Null (the default) keeps the SDK
+        /// silent.
+        /// </summary>
+        public IGGScaleLogger? Logger { get; set; }
+
+        /// <summary>Retry policy override. Null uses the defaults (3 attempts, full jitter).</summary>
+        public GGRetryPolicy? Retry { get; set; }
+
+        /// <summary>Deterministic time source for tests.</summary>
+        internal IGGClock? Clock { get; set; }
     }
 
     /// <summary>
@@ -44,6 +81,10 @@ namespace GGScale
         private readonly SemaphoreSlim _refreshLock = new SemaphoreSlim(1, 1);
         private readonly Action<Session?>? _onSessionUpdate;
         private readonly bool _ownsTransport;
+        private readonly IGGClock _clock;
+        private readonly ITransport _rawTransport;
+        private readonly RetryingTransport _retrying;
+        private readonly IGGScaleLogger? _logger;
         private Session? _session;
 
         /// <summary>Creates a client. Throws ArgumentException when options are incomplete.</summary>
@@ -57,6 +98,7 @@ namespace GGScale
             {
                 throw new ArgumentException("ApiKey is required", nameof(options));
             }
+            _clock = options.Clock ?? SystemClock.Instance;
             var transport = options.Transport;
             if (transport == null)
             {
@@ -64,16 +106,34 @@ namespace GGScale
                 {
                     throw new ArgumentException("either Transport or BaseUrl is required", nameof(options));
                 }
-                transport = new HttpTransport(options.BaseUrl!);
+                var transportOptions = new HttpTransportOptions { UserAgent = options.UserAgent };
+                if (options.Timeout != null)
+                {
+                    transportOptions.Timeout = options.Timeout.Value;
+                }
+                if (options.MaxResponseBytes != null)
+                {
+                    transportOptions.MaxResponseBytes = options.MaxResponseBytes.Value;
+                }
+                transport = new HttpTransport(options.BaseUrl!, null, transportOptions, _clock);
                 _ownsTransport = true;
             }
 
-            Transport = transport;
+            _rawTransport = transport;
+            _retrying = new RetryingTransport(
+                transport,
+                options.Retry ?? new GGRetryPolicy(),
+                options.OverallTimeout ?? TimeSpan.FromSeconds(100),
+                _clock,
+                options.Logger);
+            Transport = _retrying;
             ApiKey = options.ApiKey!;
             BaseUrl = options.BaseUrl;
             _onSessionUpdate = options.OnSessionUpdate;
+            _logger = options.Logger;
 
-            Auth = new AuthService(transport, ApiKey);
+            Auth = new AuthService(Transport, ApiKey, this);
+            Config = new ConfigService(Transport, ApiKey);
             Storage = new StorageService(this);
             Leaderboards = new LeaderboardsService(this);
             Profile = new ProfileService(this);
@@ -83,13 +143,17 @@ namespace GGScale
             Friends = new FriendsService(this);
             GameSessions = new GameSessionsService(this);
             Invites = new InvitesService(this);
+            Players = new PlayersService(this);
             Presence = new PresenceService(this);
             Account = new AccountService(this);
-            Server = new ServerService(transport, ApiKey);
+            Server = new ServerService(Transport, ApiKey);
         }
 
         /// <summary>Auth operations that are not login strategies (signup, verify, refresh, logout).</summary>
         public AuthService Auth { get; }
+
+        /// <summary>Project remote configuration (readable before login).</summary>
+        public ConfigService Config { get; }
 
         /// <summary>Per-player JSON storage.</summary>
         public StorageService Storage { get; }
@@ -118,6 +182,9 @@ namespace GGScale
         /// <summary>Game-session invites.</summary>
         public InvitesService Invites { get; }
 
+        /// <summary>Public player directory (by id or friend code).</summary>
+        public PlayersService Players { get; }
+
         /// <summary>Player presence.</summary>
         public PresenceService Presence { get; }
 
@@ -131,7 +198,11 @@ namespace GGScale
         /// </summary>
         public ServerService Server { get; }
 
-        /// <summary>The underlying transport (for building authenticators or fakes).</summary>
+        /// <summary>
+        /// The transport every service call goes through, including the
+        /// SDK retry layer. Use it to build authenticators so they share
+        /// the same retry and telemetry behavior.
+        /// </summary>
         public ITransport Transport { get; }
 
         internal string ApiKey { get; }
@@ -180,28 +251,48 @@ namespace GGScale
         /// <summary>
         /// Sends a request that requires a player session: attaches the API
         /// key and session token, refreshes proactively inside the 30 s
-        /// window, and retries once after a 401-triggered refresh.
+        /// window, and retries once after a 401-triggered refresh. The
+        /// completion telemetry record spans the whole flow: the initial
+        /// 401 is deferred while the refresh runs, so one logical call
+        /// emits exactly one record.
         /// </summary>
         internal async Task<JsonValue> CallProtectedAsync(GGRequest request, CancellationToken cancellationToken)
         {
             await RefreshIfNeededAsync(cancellationToken).ConfigureAwait(false);
             AttachSession(request);
+            request.RetryOn401Pending = true;
             try
-            {
-                return await Transport.CallAsync(request, cancellationToken).ConfigureAwait(false);
-            }
-            catch (GGScaleException ex) when (ex.Status == 401)
             {
                 try
                 {
-                    await RefreshLockedAsync(force: true, cancellationToken).ConfigureAwait(false);
+                    var resp = await Transport.CallAsync(request, cancellationToken).ConfigureAwait(false);
+                    return resp.Value;
                 }
-                catch (Exception e) when (!(e is OperationCanceledException))
+                catch (GGScaleException ex) when (ex.Status == 401 && request.RetryOn401Pending)
                 {
-                    throw ex; // surface the original 401
+                    request.RetryOn401Pending = false;
+                    try
+                    {
+                        await RefreshLockedAsync(force: true, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _retrying.EmitDeferredCompletion(request, 0, GGFailureKind.Canceled, null);
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        _retrying.EmitDeferredCompletion(request, ex.Status, ex.Kind, ex.Code);
+                        throw ex; // surface the original 401
+                    }
+                    AttachSession(request);
+                    var retried = await Transport.CallAsync(request, cancellationToken).ConfigureAwait(false);
+                    return retried.Value;
                 }
-                AttachSession(request);
-                return await Transport.CallAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                request.RetryOn401Pending = false;
             }
         }
 
@@ -227,7 +318,7 @@ namespace GGScale
             {
                 s = _session;
             }
-            if (s == null || s.RefreshToken.Length == 0 || s.ExpiresAt - DateTimeOffset.UtcNow >= RefreshWindow)
+            if (s == null || s.RefreshToken.Length == 0 || s.ExpiresAt - _clock.UtcNow >= RefreshWindow)
             {
                 return Task.CompletedTask;
             }
@@ -257,7 +348,7 @@ namespace GGScale
                     }
                     return;
                 }
-                if (!force && s.ExpiresAt - DateTimeOffset.UtcNow >= RefreshWindow)
+                if (!force && s.ExpiresAt - _clock.UtcNow >= RefreshWindow)
                 {
                     return;
                 }
@@ -275,19 +366,28 @@ namespace GGScale
         }
 
         /// <summary>
-        /// Opens a WebSocket connection to /v1/ws carrying the API key and
-        /// current session token. Requires a player session and a BaseUrl.
-        /// Refreshes the session proactively before dialing; note that
-        /// unlike REST calls, a 401 on the upgrade is not auto-retried.
+        /// Opens a managed WebSocket connection to /v1/ws with default
+        /// options. See the options overload for behavior.
         /// </summary>
-        public async Task<RealtimeClient> DialRealtimeAsync(ISocketAdapter? adapter = null, CancellationToken cancellationToken = default)
+        public Task<RealtimeClient> DialRealtimeAsync(ISocketAdapter? adapter = null, CancellationToken cancellationToken = default) =>
+            DialRealtimeAsync(null, adapter, cancellationToken);
+
+        /// <summary>
+        /// Opens a managed WebSocket connection to /v1/ws carrying the API
+        /// key and current session token. Requires a player session and a
+        /// BaseUrl. The session is refreshed before every (re)connect. The
+        /// returned client keeps a continuous read loop (server pings stay
+        /// answered), buffers messages in a bounded queue, and — per
+        /// options — reconnects with jittered backoff after retryable
+        /// drops. A 401 on the initial upgrade is not auto-retried.
+        /// </summary>
+        public async Task<RealtimeClient> DialRealtimeAsync(RealtimeOptions? options, ISocketAdapter? adapter = null, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(BaseUrl))
             {
                 throw new InvalidOperationException("ggscale: cannot determine WebSocket URL — set Options.BaseUrl");
             }
-            await RefreshIfNeededAsync(cancellationToken).ConfigureAwait(false);
-            var session = RequireSession();
+            var realtimeOptions = options ?? new RealtimeOptions();
 
             var wsUrl = BaseUrl!;
             if (wsUrl.StartsWith("https://", StringComparison.Ordinal))
@@ -299,10 +399,30 @@ namespace GGScale
                 wsUrl = ReplaceScheme(wsUrl, "http://", "ws://");
             }
             wsUrl += "/v1/ws";
+            var uri = new Uri(wsUrl);
 
-            var socket = adapter ?? new WebSocketAdapter();
-            await socket.ConnectAsync(new Uri(wsUrl), ApiKey, session.AccessToken, cancellationToken).ConfigureAwait(false);
-            return new RealtimeClient(socket);
+            var socket = adapter ?? new WebSocketAdapter(realtimeOptions.MaxInboundMessageBytes);
+            async Task Connect(CancellationToken ct)
+            {
+                try
+                {
+                    await RefreshIfNeededAsync(ct).ConfigureAwait(false);
+                }
+                catch (GGScaleException ex)
+                {
+                    // Mark refresh failures so the reconnect loop never
+                    // replays an ambiguous refresh (the rotating token may
+                    // already be consumed server-side).
+                    throw new GGScaleException(ex.Kind, GGScaleException.SessionRefreshFailedCode,
+                        "session refresh before the WebSocket dial failed", ex);
+                }
+                var session = RequireSession();
+                await socket.ConnectAsync(uri, ApiKey, session.AccessToken, ct).ConfigureAwait(false);
+            }
+
+            var client = new RealtimeClient(Connect, socket, realtimeOptions, _clock, _logger);
+            await client.StartAsync(cancellationToken).ConfigureAwait(false);
+            return client;
         }
 
         private static string ReplaceScheme(string url, string prefix, string replacement)
@@ -318,7 +438,7 @@ namespace GGScale
         public void Dispose()
         {
             _refreshLock.Dispose();
-            if (_ownsTransport && Transport is IDisposable owned)
+            if (_ownsTransport && _rawTransport is IDisposable owned)
             {
                 owned.Dispose();
             }

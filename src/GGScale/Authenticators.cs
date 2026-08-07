@@ -33,10 +33,11 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/auth/login",
+                Operation = "POST /v1/auth/login",
                 ApiKey = _apiKey,
                 Body = body,
             }, cancellationToken).ConfigureAwait(false);
-            return Session.FromJson(resp);
+            return Session.FromJson(resp.Value);
         }
     }
 
@@ -66,10 +67,45 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/auth/custom-token",
+                Operation = "POST /v1/auth/custom-token",
                 ApiKey = _apiKey,
                 Body = JsonValue.NewObject().Set("token", JsonValue.Of(_token)),
             }, cancellationToken).ConfigureAwait(false);
-            return Session.FromJson(resp);
+            return Session.FromJson(resp.Value);
+        }
+    }
+
+    /// <summary>
+    /// Authenticates via POST /v1/auth/steam using a hex-encoded
+    /// Steamworks session ticket. The server verifies the ticket with
+    /// Steam and issues a ggscale session for the Steam identity.
+    /// </summary>
+    public sealed class SteamAuth : IAuthenticator
+    {
+        private readonly ITransport _transport;
+        private readonly string _apiKey;
+        private readonly string _ticket;
+
+        /// <summary>Creates an authenticator exchanging a Steam session ticket for a session.</summary>
+        public SteamAuth(ITransport transport, string apiKey, string ticket)
+        {
+            _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+            _apiKey = apiKey;
+            _ticket = ticket;
+        }
+
+        /// <inheritdoc />
+        public async Task<Session> AuthenticateAsync(CancellationToken cancellationToken)
+        {
+            var resp = await _transport.CallAsync(new GGRequest
+            {
+                Method = "POST",
+                Path = "/v1/auth/steam",
+                Operation = "POST /v1/auth/steam",
+                ApiKey = _apiKey,
+                Body = JsonValue.NewObject().Set("ticket", JsonValue.Of(_ticket)),
+            }, cancellationToken).ConfigureAwait(false);
+            return Session.FromJson(resp.Value);
         }
     }
 
@@ -106,9 +142,10 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/auth/anonymous",
+                Operation = "POST /v1/auth/anonymous",
                 ApiKey = _apiKey,
             }, cancellationToken).ConfigureAwait(false);
-            var session = Session.FromJson(resp);
+            var session = Session.FromJson(resp.Value);
             _store?.Save(session);
             return session;
         }

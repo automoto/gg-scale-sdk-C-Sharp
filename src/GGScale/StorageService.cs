@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -52,6 +53,20 @@ namespace GGScale
 
         /// <summary>Cursor for the next page; empty when done.</summary>
         public string NextCursor { get; }
+
+        internal static StoragePage FromJson(JsonValue v)
+        {
+            var items = new List<StorageObject>();
+            var arr = v.Opt("items");
+            if (arr != null)
+            {
+                foreach (var item in arr.Items)
+                {
+                    items.Add(StorageObject.FromJson(item));
+                }
+            }
+            return new StoragePage(items, v.OptString("next_cursor") ?? string.Empty);
+        }
     }
 
     /// <summary>Options for <see cref="StorageService.ListAsync"/>.</summary>
@@ -84,6 +99,7 @@ namespace GGScale
             {
                 Method = "GET",
                 Path = StoragePath(key),
+                Operation = "GET /v1/storage/objects/{key}",
             }, cancellationToken).ConfigureAwait(false);
             return StorageObject.FromJson(resp);
         }
@@ -103,6 +119,7 @@ namespace GGScale
             {
                 Method = "PUT",
                 Path = StoragePath(key),
+                Operation = "PUT /v1/storage/objects/{key}",
                 Body = value,
             };
             if (ifMatchVersion != null)
@@ -120,13 +137,14 @@ namespace GGScale
             {
                 Method = "DELETE",
                 Path = StoragePath(key),
+                Operation = "DELETE /v1/storage/objects/{key}",
             }, cancellationToken);
         }
 
         /// <summary>Pages through the calling player's objects, oldest first.</summary>
         public async Task<StoragePage> ListAsync(StorageListOptions? options = null, CancellationToken cancellationToken = default)
         {
-            var req = new GGRequest { Method = "GET", Path = "/v1/storage/objects" };
+            var req = new GGRequest { Method = "GET", Path = "/v1/storage/objects", Operation = "GET /v1/storage/objects" };
             if (!string.IsNullOrEmpty(options?.KeyPrefix))
             {
                 req.AddQuery("key_prefix", options!.KeyPrefix!);
@@ -140,16 +158,38 @@ namespace GGScale
                 req.AddQuery("cursor", options!.Cursor!);
             }
             var resp = await _client.CallProtectedAsync(req, cancellationToken).ConfigureAwait(false);
-            var items = new List<StorageObject>();
-            var arr = resp.Opt("items");
-            if (arr != null)
+            return StoragePage.FromJson(resp);
+        }
+
+        /// <summary>
+        /// Iterates the calling player's objects across every page until the
+        /// server reports no more. Fetches lazily — abandoning the
+        /// enumeration stops further requests. The caller's options object
+        /// is not modified.
+        /// </summary>
+        public async IAsyncEnumerable<StorageObject> ListAllAsync(
+            StorageListOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var page = new StorageListOptions
             {
-                foreach (var item in arr.Items)
+                KeyPrefix = options?.KeyPrefix,
+                Limit = options?.Limit ?? 0,
+                Cursor = options?.Cursor,
+            };
+            while (true)
+            {
+                var result = await ListAsync(page, cancellationToken).ConfigureAwait(false);
+                foreach (var item in result.Items)
                 {
-                    items.Add(StorageObject.FromJson(item));
+                    yield return item;
                 }
+                if (result.NextCursor.Length == 0)
+                {
+                    yield break;
+                }
+                page.Cursor = result.NextCursor;
             }
-            return new StoragePage(items, resp.OptString("next_cursor") ?? string.Empty);
         }
 
         private static string StoragePath(string key) => "/v1/storage/objects/" + Uri.EscapeDataString(key);

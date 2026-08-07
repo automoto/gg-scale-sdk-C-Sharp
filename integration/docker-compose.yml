@@ -24,7 +24,7 @@ services:
       retries: 30
 
   ggscale:
-    image: buildwrangler/ggscale:latest
+    image: buildwrangler/ggscale:v0.9.3
     depends_on:
       postgres:
         condition: service_healthy

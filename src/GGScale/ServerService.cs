@@ -61,13 +61,14 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/server/player-sessions/verify",
+                Operation = "POST /v1/server/player-sessions/verify",
                 ApiKey = _apiKey,
                 Body = JsonValue.NewObject().Set("session_token", JsonValue.Of(sessionToken)),
             }, cancellationToken).ConfigureAwait(false);
             return new PlayerVerifyResult(
-                resp.OptLong("player_id"),
-                resp.OptString("external_id") ?? string.Empty,
-                resp.OptString("email") ?? string.Empty);
+                resp.Value.OptLong("player_id"),
+                resp.Value.OptString("external_id") ?? string.Empty,
+                resp.Value.OptString("email") ?? string.Empty);
         }
 
         /// <summary>
@@ -80,10 +81,107 @@ namespace GGScale
             var resp = await _transport.CallAsync(new GGRequest
             {
                 Method = "GET",
-                Path = "/v1/server/players/" + playerId.ToString(CultureInfo.InvariantCulture) + "/remote-addrs",
+                Path = PlayerPath(playerId) + "/remote-addrs",
+                Operation = "GET /v1/server/players/{player_id}/remote-addrs",
                 ApiKey = _apiKey,
             }, cancellationToken).ConfigureAwait(false);
-            return RemoteAddr.ListFromJson(resp);
+            return RemoteAddr.ListFromJson(resp.Value);
         }
+
+        /// <summary>
+        /// Posts a score for the player named by id — the server-tier
+        /// alternative to client submissions. IsNotFound for an unknown
+        /// player or board; IsForbidden for a disabled or banned player.
+        /// </summary>
+        public Task SubmitScoreAsync(long leaderboardId, long playerId, long score, JsonValue? metadata = null, CancellationToken cancellationToken = default)
+        {
+            var body = JsonValue.NewObject()
+                .Set("player_id", JsonValue.Of(playerId))
+                .Set("score", JsonValue.Of(score));
+            if (metadata != null)
+            {
+                body.Set("metadata", metadata);
+            }
+            return _transport.CallAsync(new GGRequest
+            {
+                Method = "POST",
+                Path = "/v1/server/leaderboards/" + leaderboardId.ToString(CultureInfo.InvariantCulture) + "/scores",
+                Operation = "POST /v1/server/leaderboards/{id}/scores",
+                ApiKey = _apiKey,
+                Body = body,
+            }, cancellationToken);
+        }
+
+        /// <summary>Reads one of a player's storage objects; IsNotFound when absent.</summary>
+        public async Task<StorageObject> GetPlayerStorageAsync(long playerId, string key, CancellationToken cancellationToken = default)
+        {
+            var resp = await _transport.CallAsync(new GGRequest
+            {
+                Method = "GET",
+                Path = PlayerStoragePath(playerId, key),
+                Operation = "GET /v1/server/players/{player_id}/storage/objects/{key}",
+                ApiKey = _apiKey,
+            }, cancellationToken).ConfigureAwait(false);
+            return StorageObject.FromJson(resp.Value);
+        }
+
+        /// <summary>
+        /// Writes one of a player's storage objects and returns it with
+        /// its new version. Pass <paramref name="ifMatchVersion"/> for
+        /// optimistic concurrency: a mismatch throws with IsConflict true.
+        /// </summary>
+        public async Task<StorageObject> PutPlayerStorageAsync(long playerId, string key, JsonValue value, long? ifMatchVersion = null, CancellationToken cancellationToken = default)
+        {
+            if (value == null)
+            {
+                throw new ArgumentNullException(nameof(value));
+            }
+            var req = new GGRequest
+            {
+                Method = "PUT",
+                Path = PlayerStoragePath(playerId, key),
+                Operation = "PUT /v1/server/players/{player_id}/storage/objects/{key}",
+                ApiKey = _apiKey,
+                Body = value,
+            };
+            if (ifMatchVersion != null)
+            {
+                req.IfMatch = ifMatchVersion.Value.ToString(CultureInfo.InvariantCulture);
+            }
+            var resp = await _transport.CallAsync(req, cancellationToken).ConfigureAwait(false);
+            return StorageObject.FromJson(resp.Value);
+        }
+
+        /// <summary>Pages through a player's storage objects, oldest first.</summary>
+        public async Task<StoragePage> ListPlayerStorageAsync(long playerId, StorageListOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            var req = new GGRequest
+            {
+                Method = "GET",
+                Path = PlayerPath(playerId) + "/storage/objects",
+                Operation = "GET /v1/server/players/{player_id}/storage/objects",
+                ApiKey = _apiKey,
+            };
+            if (!string.IsNullOrEmpty(options?.KeyPrefix))
+            {
+                req.AddQuery("key_prefix", options!.KeyPrefix!);
+            }
+            if (options?.Limit > 0)
+            {
+                req.AddQuery("limit", options.Limit.ToString(CultureInfo.InvariantCulture));
+            }
+            if (!string.IsNullOrEmpty(options?.Cursor))
+            {
+                req.AddQuery("cursor", options!.Cursor!);
+            }
+            var resp = await _transport.CallAsync(req, cancellationToken).ConfigureAwait(false);
+            return StoragePage.FromJson(resp.Value);
+        }
+
+        private static string PlayerPath(long playerId) =>
+            "/v1/server/players/" + playerId.ToString(CultureInfo.InvariantCulture);
+
+        private static string PlayerStoragePath(long playerId, string key) =>
+            PlayerPath(playerId) + "/storage/objects/" + Uri.EscapeDataString(key);
     }
 }

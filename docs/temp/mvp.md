@@ -215,9 +215,87 @@ not the primary target.
       session persistence, engine matrix, development targets.
 - [ ] XML docs complete (`make build` enforces); doc comments explain
       auth tiers (publishable vs secret) on every server-tier API.
-- [ ] NuGet packaging metadata + `make pack`; version 0.1.0.
-- [ ] Wire-contract drift check: re-diff DTOs against
-      `docs/openapi.yaml` regenerated from the server repo.
+- [ ] NuGet packaging metadata + `make pack`; version 0.2.0.
+- [x] Wire-contract drift check: re-diff DTOs against
+      `docs/openapi.yaml` regenerated from the server repo
+      (done 2026-08-07 as part of M10).
+
+### M10 — v0.9.3 GA parity + SDK best-practices compliance ✅
+
+Driven by the SDK client guide
+(`~/notes/resources/ggscale-docs/monthly-notes/august-docs/sdk-client-best-practices.md`)
+and the server v0.9.3 GA release. SDK version bumped to 0.2.0.
+
+- [x] Transport foundation: `ITransport` now returns a `GGResponse`
+      envelope (status, value, ETag, X-Request-Id). `GGScaleException`
+      gained `Kind` (`GGFailureKind`: connection/timeout/decode/
+      handshake vs HTTP), problem-details `ProblemType`/`Title`/
+      `Instance`, `RequestId`, bounded `RawBody`. Configurable
+      user agent, per-attempt timeout, response size cap (4 MiB);
+      Retry-After parsed in both delta-seconds and HTTP-date forms.
+      **Breaking**: custom `ITransport`/`ISocketAdapter`
+      implementations must adapt.
+- [x] Retry engine (`RetryingTransport`): 3 total attempts by default,
+      full jitter `random(0, min(10s, 250ms × 2^n))`, Retry-After as a
+      minimum wait, overall deadline (default 100 s) across attempts
+      and backoff, GET/HEAD/PUT/DELETE only (POST/PATCH never;
+      `GGRequest.Idempotent` opt-in), 401/403 never retried, refresh
+      never auto-retried. One stable client-generated `X-Request-Id`
+      per logical call.
+- [x] Telemetry: `IGGScaleLogger` hook (silent by default) — one
+      completion record per call, per-retry records, WS lifecycle
+      events; records carry route templates, never URLs/tokens/bodies.
+- [x] `ConfigService` (`GET /v1/config`) with ETag/If-None-Match and
+      304 → `NotModified`.
+- [x] Pagination iterators: `Storage.ListAllAsync`,
+      `Friends.ListAllAsync` (`IAsyncEnumerable`).
+- [x] v0.9.3 endpoint parity: Steam sign-in (`SteamAuth`), account
+      linking, change-password, self-disable, password reset, resend
+      verification; `PlayersService` (directory + friend codes);
+      profile display name + `RegenerateFriendCodeAsync`; leaderboard
+      discovery/friends/periods + submit metadata; public session
+      browser + P2P signaling; server-tier score submit + player
+      storage; relay `stun_urls`; `expires_at`/`display_name` DTO
+      fields; int64-safe ids throughout; null-array tolerance.
+- [x] Managed realtime client: continuous read loop (server pings
+      answered), bounded drop-oldest queue (`AsyncBoundedQueue`,
+      hand-rolled — System.Threading.Channels is not in the
+      netstandard2.1 BCL), 1 MiB inbound cap, close-code-based
+      reconnect (abnormal/1001/1006/1011–1013; terminal on
+      1000/4xxx/auth), first retry random 0–5 s then capped full
+      jitter, handshake Retry-After honored, backoff reset only after
+      a stable connection, session refresh before every reconnect,
+      `StateChanged` resync signal (`Connected` + `IsReconnect`).
+      On net8 the handshake status enriches errors
+      (`CollectHttpResponseDetails`); netstandard2.1 cannot observe
+      it (status 0 = retryable-unknown).
+- [x] `docs/openapi.yaml` replaced with the server v0.9.3 spec
+      (70 operations, clean Huma operationIds); integration image
+      pinned to `buildwrangler/ggscale:v0.9.3`.
+- [x] Conformance/unit coverage: retry matrix, both Retry-After
+      forms, deadline/cancel during backoff, ETag/304, pagination
+      iterators, redaction, WS reconnect/overflow/graceful close,
+      unknown fields/events. Deterministic via `FakeClock` +
+      scripted `FakeTransport`/`FakeSocketAdapter`.
+- [x] Review hardening (2026-08-07): overall deadline now cancels
+      in-flight attempts; ReconnectTimeout bounds the WS connect
+      itself; a failed pre-dial session refresh is terminal for
+      reconnect (never replays the rotating token); CloseAsync/
+      DisposeAsync idempotent; exactly one completion record per
+      logical call across the 401 refresh-and-retry; route-template
+      Operation set on every request builder; TLS/certificate
+      failures classified `certificate_error` and never retried;
+      DisableAsync password optional (session-only for anonymous
+      players); `IsValidationError` (422) helper.
+- [x] Integration suite extension for the new endpoints: config ETag
+      304 round-trip, friend-code regenerate/resolve, players batch
+      resolve, leaderboard discovery/periods + server-tier submit
+      with metadata, public session browser + signals round-trip,
+      server-tier player storage CRUD + OCC, password-reset 202
+      smoke. Validated 2026-08-07: 18/18 green against
+      `buildwrangler/ggscale:v0.9.3` (seed.sql updated for the
+      integer tenant tier; presence validation asserts 422 per the
+      Huma migration).
 
 ---
 
@@ -250,18 +328,33 @@ SDK's integration suite. All timestamps are RFC 3339 strings.
 
 ### §3 Leaderboards
 
-- Submit `{"score": n}` → **201** empty. Secret-key-only: publishable
-  keys get **403**.
-- Top: `{"entries": [{"player_id": n, "score": n, "rank": n}]}` —
-  rank is 0-based.
+- Submit `{"score": n, "metadata": obj?}` → **201** empty. `score` is
+  required (422 when absent). Publishable keys get **403** unless the
+  board sets `client_submissions`.
+- Entry: `{"player_id": n, "score": n, "rank": n,
+  "display_name": s?, "metadata": obj?}` — rank is 0-based.
 - Around-me: `{"entries": [entry], "self_rank": n}` — `self_rank` is
   −1 when the caller has no score.
+- Discovery (`GET /v1/leaderboards`, no paging):
+  `{"leaderboards": [{"id", "name", "sort_order", "score_operator",
+  "client_submissions", "score_min"?, "score_max"?, "attempt_cap"?,
+  "reset_schedule", "current_period", "period_started_at"?,
+  "next_reset_at"?, "metadata"?}]}`.
+- Friends view: `GET /v1/leaderboards/{id}/friends` → entries ranked
+  0-based within caller + accepted friends.
+- Periods: `GET /v1/leaderboards/{id}/periods?limit=&cursor=` →
+  `{"current_period", "reset_schedule", "periods": [{"period",
+  "started_at", "ended_at"}], "next_cursor"}`;
+  `GET .../periods/{period}/top?limit=` → entries (404 for a period
+  the board has not reached).
+- Server tier: `POST /v1/server/leaderboards/{id}/scores`
+  `{"player_id": n, "score": n, "metadata": obj?}` → **201**.
 
 ### §4 Friends / Presence / Invites / Remote addresses
 
 - Friends list (`GET /v1/friends?status=&limit=&cursor=`; `status` ∈
-  pending|accepted|rejected|blocked, default accepted — the spec is
-  missing the `status` param):
+  pending|accepted|rejected|blocked, default accepted — documented in
+  the v0.9.3 spec):
   `{"items": [friend], "next_cursor": s}` where friend =
   `{"id": n, "account_id": uuid, "player_id": n?, "status": s,
     "email": s?, "display_name": s?,
@@ -295,8 +388,21 @@ SDK's integration suite. All timestamps are RFC 3339 strings.
   "props": <raw json>, "max_players": n(≤64, default 2), "private": b}`
   → **201** session. Project cap reached → **429**.
 - Session: `{"session_id": s, "join_code": s, "state": "open"|"ended",
-  "peers": [{"player_id": n, "xuid": s?, "addr": {"ip": s, "port": n},
-  "relay": <json|null>}]}`
+  "expires_at": ts, "peers": [{"player_id": n, "xuid": s?,
+  "display_name": s?, "addr": {"ip": s, "port": n}}]}` — the per-peer
+  `relay` field was removed in v0.9.3; credentials come from
+  `POST /v1/relay/credentials` (response now includes `stun_urls`).
+- Public browser: `GET /v1/game-sessions?title_id=&limit=&cursor=` →
+  `{"items": [{"session_id", "title_id"?, "props", "player_count",
+  "max_players", "host_player_id", "host_display_name"?,
+  "created_at"}], "next_cursor"}` — open, public, non-full sessions
+  with a recent heartbeat.
+- P2P signals: `POST /v1/game-session/{id}/signals`
+  `{"to_player_id": n, "negotiation_id": s, "kind":
+  offer|answer|restart_offer|restart_answer, "payload": s(≤64 KiB)}`
+  → **201** `{"id": n}`; 30/min per sender per session → **429**.
+  `GET .../signals?after_id=` → `{"signals": [entry]}` addressed to
+  the caller, id-ascending.
 - Resolve: `GET /v1/game-session?joinCode=X` → `{"session_id": s}`
   (note camelCase query param). Private sessions resolve only for
   host/members/invitees; others → **404**.
@@ -314,10 +420,17 @@ SDK's integration suite. All timestamps are RFC 3339 strings.
 ### §6 Realtime WebSocket (`GET /v1/ws`)
 
 - Envelope: `{"type": s, "payload": <raw json>}`.
-- `match_ready`: `{"address": s, "ticket_id": n}`.
+- `matchmaker_matched` (replaced `match_ready` in v0.9.3):
+  `{"ticket_id": n, "match_id": s, "mode": s, "address": s?,
+  "protocol_hint": s?, "session_id": s?, "join_code": s?,
+  "host_player_id": n?, "users": [{"player_id": n, "region": s,
+  "string_properties"?, "numeric_properties"?, "attributes"?}]}`.
 - `game_invite`: `{"invite_id": n, "session_id": s, "join_code": s}`.
 - `presence`: `{"player_id": n, "status": s, "session_id": s|null}`
   (fanned out to accepted friends only).
+- Server pings every 30 s; inbound messages are capped at 1 MiB and
+  currently ignored (push-only channel). Tenant-cap 503 rejections
+  carry `Retry-After: 5`.
 - Dial BEFORE creating a matchmaking ticket or the push can be lost.
 
 ### §7 Server-tier (`/v1/server/*`, secret key required — 403 otherwise)
@@ -327,6 +440,10 @@ SDK's integration suite. All timestamps are RFC 3339 strings.
   Every failure mode (bad token, wrong tenant, disabled player,
   malformed body) → the same opaque **401**
   `{"error": "invalid session"}` — never distinguish.
+- Player storage (v0.9.3):
+  `GET/PUT /v1/server/players/{player_id}/storage/objects/{key}` and
+  `GET .../storage/objects?key_prefix=&limit=&cursor=` — same object
+  and page shapes as §2, including `If-Match` OCC on PUT.
 
 ### §8 Errors in general
 
@@ -338,3 +455,7 @@ SDK's integration suite. All timestamps are RFC 3339 strings.
 - Auth: `Authorization: Bearer <api key>` always; `X-Session-Token`
   on player routes. 401 = bad/missing credential, 403 = key type or
   scope or linked-account requirement.
+- Since the Huma migration (v0.9.2+): errors are
+  `application/problem+json` (`type`, `title`, `status`, `detail`,
+  `instance`, `errors[]`), and request-validation failures answer
+  **422** (`IsValidationError`), not 400.

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -132,7 +133,7 @@ namespace GGScale
         /// <summary>Lists the caller's friend edges filtered by status.</summary>
         public async Task<FriendsPage> ListAsync(FriendsListOptions? options = null, CancellationToken cancellationToken = default)
         {
-            var req = new GGRequest { Method = "GET", Path = "/v1/friends" };
+            var req = new GGRequest { Method = "GET", Path = "/v1/friends", Operation = "GET /v1/friends" };
             if (!string.IsNullOrEmpty(options?.Status))
             {
                 req.AddQuery("status", options!.Status!);
@@ -156,6 +157,37 @@ namespace GGScale
                 }
             }
             return new FriendsPage(items, resp.OptString("next_cursor") ?? string.Empty);
+        }
+
+        /// <summary>
+        /// Iterates the caller's friend edges across every page until the
+        /// server reports no more. Fetches lazily — abandoning the
+        /// enumeration stops further requests. The caller's options object
+        /// is not modified.
+        /// </summary>
+        public async IAsyncEnumerable<FriendInfo> ListAllAsync(
+            FriendsListOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var page = new FriendsListOptions
+            {
+                Status = options?.Status,
+                Limit = options?.Limit ?? 0,
+                Cursor = options?.Cursor,
+            };
+            while (true)
+            {
+                var result = await ListAsync(page, cancellationToken).ConfigureAwait(false);
+                foreach (var item in result.Items)
+                {
+                    yield return item;
+                }
+                if (result.NextCursor.Length == 0)
+                {
+                    yield break;
+                }
+                page.Cursor = result.NextCursor;
+            }
         }
 
         /// <summary>
@@ -185,6 +217,7 @@ namespace GGScale
             {
                 Method = "DELETE",
                 Path = FriendPath(playerId),
+                Operation = "DELETE /v1/friends/{player_id}",
             }, cancellationToken);
         }
 
@@ -211,6 +244,7 @@ namespace GGScale
             {
                 Method = "GET",
                 Path = FriendPath(playerId) + "/remote-addrs",
+                Operation = "GET /v1/friends/{player_id}/remote-addrs",
             }, cancellationToken).ConfigureAwait(false);
             return RemoteAddr.ListFromJson(resp);
         }
@@ -221,6 +255,7 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = FriendPath(playerId) + action,
+                Operation = "POST /v1/friends/{player_id}" + action,
             }, cancellationToken);
         }
 

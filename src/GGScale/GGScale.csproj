@@ -10,7 +10,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>GGScale</PackageId>
     <Description>Official C# client for the ggscale API. Engine-agnostic: Unity, MonoGame, Godot, and plain .NET.</Description>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <!-- Zero runtime dependencies by design: nothing beyond the base class

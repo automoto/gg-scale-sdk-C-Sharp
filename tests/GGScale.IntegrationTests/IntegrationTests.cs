@@ -194,8 +194,10 @@ namespace GGScale.IntegrationTests
         {
             await _fx.Player1.Presence.SetAsync("online");
 
+            // Since the server's Huma migration (v0.9.2+), request
+            // validation failures answer 422 problem-details, not 400.
             var ex = await Assert.ThrowsAsync<GGScaleException>(() => _fx.Player1.Presence.SetAsync(""));
-            Assert.True(ex.IsBadRequest);
+            Assert.True(ex.IsValidationError);
         }
     }
 

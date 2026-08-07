@@ -78,6 +78,7 @@ namespace GGScale
             {
                 Method = "GET",
                 Path = "/v1/account/remote-addrs",
+                Operation = "GET /v1/account/remote-addrs",
             }, cancellationToken).ConfigureAwait(false);
             return RemoteAddr.ListFromJson(resp);
         }
@@ -96,6 +97,7 @@ namespace GGScale
             {
                 Method = "PUT",
                 Path = "/v1/account/remote-addrs",
+                Operation = "PUT /v1/account/remote-addrs",
                 Body = RemoteAddr.ListToJson(addrs),
             }, cancellationToken).ConfigureAwait(false);
             return RemoteAddr.ListFromJson(resp);

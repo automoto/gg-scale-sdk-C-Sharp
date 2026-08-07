@@ -458,6 +458,7 @@ namespace GGScale
             {
                 Method = "POST",
                 Path = "/v1/matchmaker/tickets",
+                Operation = "POST /v1/matchmaker/tickets",
                 Body = request.ToJson(),
             }, cancellationToken).ConfigureAwait(false);
             return Ticket.FromJson(resp);
@@ -470,6 +471,7 @@ namespace GGScale
             {
                 Method = "GET",
                 Path = TicketPath(id),
+                Operation = "GET /v1/matchmaker/tickets/{id}",
             }, cancellationToken).ConfigureAwait(false);
             return Ticket.FromJson(resp);
         }
@@ -481,6 +483,7 @@ namespace GGScale
             {
                 Method = "DELETE",
                 Path = TicketPath(id),
+                Operation = "DELETE /v1/matchmaker/tickets/{id}",
             }, cancellationToken);
         }
 

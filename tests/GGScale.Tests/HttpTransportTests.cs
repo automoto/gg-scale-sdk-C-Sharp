@@ -23,12 +23,26 @@ namespace GGScale.Tests
 
         public Dictionary<string, string> ResponseHeaders { get; } = new Dictionary<string, string>();
 
+        /// <summary>When set, SendAsync throws this instead of responding.</summary>
+        public Exception? Throw { get; set; }
+
+        /// <summary>Delay before responding (for timeout tests).</summary>
+        public TimeSpan Delay { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastRequest = request;
             LastRequestBody = request.Content == null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (Throw != null)
+            {
+                throw Throw;
+            }
+            if (Delay > TimeSpan.Zero)
+            {
+                await Task.Delay(Delay, cancellationToken).ConfigureAwait(false);
+            }
             var resp = new HttpResponseMessage(Status);
             if (Body != null)
             {
@@ -44,10 +58,10 @@ namespace GGScale.Tests
 
     public class HttpTransportTests
     {
-        private static (HttpTransport, StubHandler) NewTransport()
+        private static (HttpTransport, StubHandler) NewTransport(HttpTransportOptions? options = null, IGGClock? clock = null)
         {
             var handler = new StubHandler();
-            return (new HttpTransport("http://api.test", new HttpClient(handler)), handler);
+            return (new HttpTransport("http://api.test", new HttpClient(handler), options, clock), handler);
         }
 
         [Fact]
@@ -94,7 +108,7 @@ namespace GGScale.Tests
 
             var got = await t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None);
 
-            Assert.Equal(7L, got.OptLong("v"));
+            Assert.Equal(7L, got.Value.OptLong("v"));
         }
 
         [Fact]
@@ -105,7 +119,8 @@ namespace GGScale.Tests
 
             var got = await t.CallAsync(new GGRequest { Method = "DELETE", Path = "/v1/x" }, CancellationToken.None);
 
-            Assert.Equal(JsonKind.Null, got.Kind);
+            Assert.Equal(204, got.Status);
+            Assert.Equal(JsonKind.Null, got.Value.Kind);
         }
 
         [Fact]
@@ -190,6 +205,164 @@ namespace GGScale.Tests
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, cts.Token));
+        }
+
+        [Fact]
+        public async Task CallAsync_maps_problem_type_title_instance_and_request_id()
+        {
+            var (t, h) = NewTransport();
+            h.Status = HttpStatusCode.UnprocessableEntity;
+            h.Body = "{\"type\":\"https://ggscale.dev/errors/validation\",\"title\":\"Unprocessable Entity\",\"detail\":\"score is required\",\"instance\":\"/v1/leaderboards/1/scores\"}";
+            h.ResponseHeaders["X-Request-Id"] = "req-abc";
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "POST", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(GGFailureKind.HttpError, ex.Kind);
+            Assert.Equal("https://ggscale.dev/errors/validation", ex.ProblemType);
+            Assert.Equal("Unprocessable Entity", ex.Title);
+            Assert.Equal("/v1/leaderboards/1/scores", ex.Instance);
+            Assert.Equal("req-abc", ex.RequestId);
+        }
+
+        [Fact]
+        public async Task CallAsync_keeps_bounded_raw_body_on_unparseable_error()
+        {
+            var (t, h) = NewTransport();
+            h.Status = HttpStatusCode.BadGateway;
+            h.Body = "<html>" + new string('x', 4000) + "</html>";
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.NotNull(ex.RawBody);
+            Assert.StartsWith("<html>", ex.RawBody, StringComparison.Ordinal);
+            Assert.Equal(2048, ex.RawBody!.Length);
+        }
+
+        [Fact]
+        public async Task CallAsync_wraps_connect_failure_as_connection_kind()
+        {
+            var (t, h) = NewTransport();
+            var cause = new HttpRequestException("connection refused");
+            h.Throw = cause;
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(GGFailureKind.Connection, ex.Kind);
+            Assert.Equal(0, ex.Status);
+            Assert.Same(cause, ex.InnerException);
+        }
+
+        [Fact]
+        public async Task CallAsync_classifies_certificate_failure_as_non_retryable()
+        {
+            var (t, h) = NewTransport();
+            h.Throw = new HttpRequestException(
+                "The SSL connection could not be established",
+                new System.Security.Authentication.AuthenticationException("certificate rejected"));
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(GGFailureKind.Connection, ex.Kind);
+            Assert.Equal("certificate_error", ex.Code);
+            Assert.False(ex.IsRetryable);
+        }
+
+        [Fact]
+        public async Task CallAsync_classifies_attempt_timeout()
+        {
+            var (t, h) = NewTransport(new HttpTransportOptions { Timeout = TimeSpan.FromMilliseconds(50) });
+            h.Delay = TimeSpan.FromSeconds(5);
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(GGFailureKind.Timeout, ex.Kind);
+        }
+
+        [Fact]
+        public async Task CallAsync_throws_decode_with_raw_body_on_malformed_success_json()
+        {
+            var (t, h) = NewTransport();
+            h.Body = "not json";
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(GGFailureKind.Decode, ex.Kind);
+            Assert.Equal("not json", ex.RawBody);
+        }
+
+        [Fact]
+        public async Task CallAsync_enforces_max_response_bytes()
+        {
+            var (t, h) = NewTransport(new HttpTransportOptions { MaxResponseBytes = 10 });
+            h.Body = "{\"a\":\"0123456789012345\"}";
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(GGFailureKind.Decode, ex.Kind);
+            Assert.Equal("response_too_large", ex.Code);
+        }
+
+        [Fact]
+        public async Task CallAsync_parses_retry_after_http_date()
+        {
+            var clock = new FakeClock();
+            var (t, h) = NewTransport(clock: clock);
+            h.Status = (HttpStatusCode)503;
+            h.ResponseHeaders["Retry-After"] = clock.UtcNow.AddSeconds(90).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(TimeSpan.FromSeconds(90), ex.RetryAfter);
+        }
+
+        [Fact]
+        public async Task CallAsync_returns_etag_and_not_modified_on_304_with_if_none_match()
+        {
+            var (t, h) = NewTransport();
+            h.Status = HttpStatusCode.NotModified;
+            h.ResponseHeaders["ETag"] = "\"remote-config-abc\"";
+
+            var got = await t.CallAsync(
+                new GGRequest { Method = "GET", Path = "/v1/config", IfNoneMatch = "\"remote-config-abc\"" },
+                CancellationToken.None);
+
+            Assert.True(got.NotModified);
+            Assert.Equal("\"remote-config-abc\"", got.ETag);
+            Assert.Equal(JsonKind.Null, got.Value.Kind);
+            Assert.Equal("\"remote-config-abc\"", string.Join(",", h.LastRequest!.Headers.GetValues("If-None-Match")));
+        }
+
+        [Fact]
+        public async Task CallAsync_304_without_if_none_match_is_an_error()
+        {
+            var (t, h) = NewTransport();
+            h.Status = HttpStatusCode.NotModified;
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(
+                () => t.CallAsync(new GGRequest { Method = "GET", Path = "/v1/x" }, CancellationToken.None));
+
+            Assert.Equal(304, ex.Status);
+        }
+
+        [Fact]
+        public async Task CallAsync_sends_request_id_and_configured_user_agent()
+        {
+            var (t, h) = NewTransport(new HttpTransportOptions { UserAgent = "my-game/1.2" });
+            h.Body = "{}";
+
+            var req = new GGRequest { Method = "GET", Path = "/v1/x", RequestId = "rid-1" };
+            await t.CallAsync(req, CancellationToken.None);
+
+            Assert.Equal("rid-1", string.Join(",", h.LastRequest!.Headers.GetValues("X-Request-Id")));
+            Assert.Equal("my-game/1.2", string.Join(",", h.LastRequest.Headers.GetValues("User-Agent")));
         }
     }
 }

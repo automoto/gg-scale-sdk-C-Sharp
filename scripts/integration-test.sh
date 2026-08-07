@@ -4,7 +4,7 @@
 # down.
 #
 #   KEEP_STACK=1            leave the stack running for debugging
-#   GGSCALE_IT_PULL=never   test a locally built buildwrangler/ggscale:latest
+#   GGSCALE_IT_PULL=never   test a locally built buildwrangler/ggscale:v0.9.3
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
