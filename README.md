@@ -1,8 +1,6 @@
 # GGScale C# SDK
 
-Official, engine-agnostic C# client for the [ggscale](https://github.com/automoto/gg-scale) game backend.
-
-SDK `0.2.0` targets ggscale server `v0.9.3`.
+The GGScale C# SDK is the official, engine-agnostic client for the [ggscale](https://github.com/automoto/gg-scale) multiplayer game backend. It provides authentication, player data, social features, leaderboards, matchmaking, game sessions, realtime events, relay credentials, and server APIs. SDK `0.2.0` supports Unity, Godot, MonoGame, and .NET against ggscale server `v0.9.3`.
 
 ## Features
 
@@ -10,8 +8,9 @@ SDK `0.2.0` targets ggscale server `v0.9.3`.
 - Account linking, player profiles, storage, friends, invites, and presence
 - Remote config, player discovery, friend codes, and remote-address exchange
 - Leaderboards, matchmaking, public sessions, join codes, and P2P signaling
+- Peer to peer gameplay support with support for relays when needed. TURN/STUN support provided.
 - Managed realtime events with automatic WebSocket reconnection
-- TURN/STUN credentials, fleet discovery, and game-server APIs
+- Dedicated server support through a plugin based  fleet discovery, and game-server APIs
 
 ## SDK
 
