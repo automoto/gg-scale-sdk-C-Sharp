@@ -47,6 +47,12 @@ Console.WriteLine($"share this join code: {session.JoinCode}");
 
 Realtime pushes (`match_ready`, `game_invite`, `presence`) arrive via `client.DialRealtimeAsync()` → `ReadMessageAsync()`.
 
+Game-session lifetime: a session lives in a one-hour sliding window — member
+`HeartbeatAsync` calls extend it while the match runs, and an idle session
+expires within the hour. When the match ends, the host should call
+`LeaveAsync` (DELETE) so the session stops counting against the project's
+open-session limit immediately.
+
 Errors are one type: `GGScaleException` with `Status`, `Code`, `RetryAfter`, `ConflictVersion` and helpers (`IsNotFound`, `IsConflict`, `IsRateLimited`, …).
 
 ## Design constraints

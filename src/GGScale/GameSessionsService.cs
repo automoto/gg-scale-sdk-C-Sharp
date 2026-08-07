@@ -32,12 +32,11 @@ namespace GGScale
     /// <summary>One member of a session's roster.</summary>
     public sealed class GameSessionPeer
     {
-        internal GameSessionPeer(long playerId, string xuid, GameSessionAddr addr, JsonValue relay)
+        internal GameSessionPeer(long playerId, string xuid, GameSessionAddr addr)
         {
             PlayerId = playerId;
             Xuid = xuid;
             Addr = addr;
-            Relay = relay;
         }
 
         /// <summary>The peer's player id.</summary>
@@ -49,15 +48,11 @@ namespace GGScale
         /// <summary>The peer's published endpoint.</summary>
         public GameSessionAddr Addr { get; }
 
-        /// <summary>Opaque relay hint; JsonValue.Null when absent.</summary>
-        public JsonValue Relay { get; }
-
         internal static GameSessionPeer FromJson(JsonValue v) =>
             new GameSessionPeer(
                 v.OptLong("player_id"),
                 v.OptString("xuid") ?? string.Empty,
-                GameSessionAddr.FromJson(v.Opt("addr") ?? JsonValue.NewObject()),
-                v.Opt("relay") ?? JsonValue.Null);
+                GameSessionAddr.FromJson(v.Opt("addr") ?? JsonValue.NewObject()));
     }
 
     /// <summary>A player-hosted game session with its peer roster.</summary>
