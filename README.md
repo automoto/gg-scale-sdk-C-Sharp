@@ -12,20 +12,20 @@ Official, engine-agnostic C# client for the [ggscale](https://github.com/automot
 - Remote config, player discovery, and remote-address exchange
 - Dedicated-server support via plugin-based fleet discovery and game-server APIs
 
-`GGScaleClient` exposes typed services for all of the above, with automatic session refresh, safe retries, structured `GGScaleException` errors, optional `IGGScaleLogger` telemetry, and `CancellationToken` support throughout.
+`GGScaleClient` exposes a typed service for each, with automatic session refresh, safe retries, structured `GGScaleException` errors, optional `IGGScaleLogger` telemetry, and `CancellationToken` support.
 
 ## Game engine support
 
-One codebase runs unmodified in every major C# game environment. The library ships two targets — `netstandard2.1` (Unity profile) and `net8.0` — with **zero runtime dependencies and no engine references**, so nothing needs to be ported or shimmed per engine.
+The library targets `netstandard2.1` (the Unity profile) and `net8.0`, with no runtime dependencies or engine references:
 
-| Engine | Target | How it works |
+| Engine | Target | Notes |
 |---|---|---|
-| Unity 2021.3+ | `netstandard2.1` | Works on Mono and IL2CPP; serialization is AOT-safe with no runtime reflection or codegen |
-| Godot 4 (C#) | `net8.0` | Reference directly from a .NET-enabled Godot project |
-| MonoGame | `net8.0` | Plain project reference; no adapter required |
+| Unity 2021.3+ | `netstandard2.1` | Mono and IL2CPP; AOT-safe serialization with no runtime reflection or codegen |
+| Godot 4 (C#) | `net8.0` | Reference from a .NET-enabled Godot project |
+| MonoGame | `net8.0` | Plain project reference; no adapter needed |
 | Plain .NET | `net8.0` | Clients, tools, and dedicated game servers |
 
-The SDK is engine-agnostic by design: it never touches engine APIs and does not assume a main thread. Marshal callbacks to your engine's thread where the engine requires it.
+The SDK does not assume a main thread. Marshal callbacks to your engine's thread where the engine requires it.
 
 ## Requirements
 
@@ -105,15 +105,15 @@ Other login strategies: `EmailPasswordAuth`, `CustomTokenAuth`, `SteamAuth`, and
 | `Server` | `VerifySessionAsync`, `FleetHeartbeatAsync`, `SubmitScoreAsync`, `PlayerRemoteAddrsAsync`, `GetPlayerStorageAsync`, `PutPlayerStorageAsync`, `ListPlayerStorageAsync`, `ListAllStorageAsync` (secret API key) |
 | `Health` | `GetAsync` |
 
-Every service is a property of `GGScaleClient`. The client is safe for concurrent use. A session refreshes when it is less than 30 seconds from expiry, and a 401 causes one refresh and one more try.
+Every service is a property of `GGScaleClient`, which is safe for concurrent use. A session refreshes when it is less than 30 seconds from expiry, and a 401 causes one refresh and one retry.
 
 ## Which key?
 
-A game ships the **publishable key**. Use the **secret key** only on a game server or backend, never in a game build. Operations on `GGScaleClient.Server` need the secret key, and a publishable key gets 403 there. Every other service takes the publishable key. A secret key also works there, but it must never ship in a game.
+Game builds ship the publishable key. The secret key belongs only on a game server or backend. `GGScaleClient.Server` needs the secret key, and a publishable key gets 403 there. Every other service accepts either key.
 
 ## Realtime events
 
-`DialRealtimeAsync` returns a `RealtimeClient`. Each message from `ReadMessageAsync` has a `Type` and a JSON `Payload`. Read the payload with the `FromPayload` method of its type:
+`DialRealtimeAsync` returns a `RealtimeClient`. Each message from `ReadMessageAsync` has a `Type` and a JSON `Payload`. Decode the payload with the `FromPayload` method of its type:
 
 | `Type` | Payload type |
 |---|---|
@@ -123,15 +123,19 @@ A game ships the **publishable key**. Use the **secret key** only on a game serv
 | `RealtimeEvents.PartyChanged` | `PartyChangedEvent` |
 | `RealtimeEvents.PartyInvite` | `PartyInviteEvent` |
 
-Events are best effort. A client that misses one gets the state again with the matching GET.
+Events are best effort. To recover a missed event, call the matching GET.
 
-**One socket per player.** The server keeps one realtime socket for each player. A new connection closes the older socket of that player. `DialRealtimeAsync`, `Matchmaker.WaitForMatchAsync`, `Parties.WatchAsync` and `Parties.WaitForMatchAsync` each open a socket, so use only one of them at a time. In a party game, make `Parties.WatchAsync` the single realtime reader.
+### One socket per player
 
-**Browser and WebGL builds.** A browser cannot set WebSocket headers. For these platforms, write a socket adapter that implements `ITicketSocketAdapter`. The client then gets a one-time ticket with `Realtime.CreateTicketAsync` for each connect, reconnects included, and gives the adapter the URL `/v1/ws?ticket=...`. The adapter sends no headers. The SDK does not ship a WebGL adapter. Add the page origin of your game to the Game Project's allowed origins (in the dashboard, or with the MCP `set_allowed_origins` tool), or the server refuses the WebSocket.
+The server keeps one realtime socket per player, and a new connection closes the old one. `DialRealtimeAsync`, `Matchmaker.WaitForMatchAsync`, `Parties.WatchAsync`, and `Parties.WaitForMatchAsync` each open a socket, so use only one at a time. In a party game, make `Parties.WatchAsync` the only realtime reader.
+
+### Browser and WebGL builds
+
+Browsers cannot set WebSocket headers, so implement `ITicketSocketAdapter`. On every connect, reconnects included, the client gets a one-time ticket from `Realtime.CreateTicketAsync` and gives the adapter the URL `/v1/ws?ticket=...`, with no headers. The SDK does not ship a WebGL adapter. Add your game's page origin to the Game Project's allowed origins (in the dashboard, or with the MCP `set_allowed_origins` tool), or the server refuses the WebSocket.
 
 ## Parties
 
-A party queues as one unit. Most writes take the party version you last saw. A stale version throws a `GGScaleException` with `IsStaleVersion` set: read the party again and try again. Only the leader can update, disband, kick, invite, create or revoke codes, queue, cancel the queue, and rematch.
+A party queues as one unit. Most writes take the party version you last saw. A stale version throws a `GGScaleException` with `IsStaleVersion` set, so read the party again and retry. Only the leader can update, disband, kick, invite, create or revoke codes, queue, cancel the queue, and rematch.
 
 ```csharp
 var party = await leader.Parties.CreateAsync(new MatchRequest { Mode = MatchMode.MatchOnly, MinCount = 2, MaxCount = 4 });
@@ -156,22 +160,33 @@ await foreach (var ev in member.Parties.WatchAsync(party.Id, cancellationToken: 
 }
 ```
 
-- Each member must send a heartbeat within 30 seconds, or the server removes the member. `WatchAsync` sends one every 10 seconds while you enumerate it, so keep the loop body short. With party id 0 it reports party invites only.
-- `QueueAsync` and `RematchAsync` send an `Idempotency-Key`. Give your own key to try a call again safely, or null to let the SDK make one. They throw with `IsPartyEnqueueDisabled` when the server turns party queue off.
-- `JoinByCodeAsync` throws with `IsCodeCooldown` after too many wrong codes. Wait for `RetryAfter`; the server sets the cooldown.
-- `ListInvitesAsync` is the source of truth for invites. A new invite to a friend who has a pending invite sends no new `party_invite` event.
-- `PartyMember.Attributes` come back exactly as the member sent them, HTML included. Escape them before you show them.
+- Each member must send a heartbeat within 30 seconds, or the server removes them. `WatchAsync` sends one every 10 seconds while you enumerate it, so keep the loop body short. With party id 0, it reports only party invites.
+- `QueueAsync` and `RematchAsync` send an `Idempotency-Key`. Pass your own key to retry a call safely, or null to let the SDK generate one. Both throw with `IsPartyEnqueueDisabled` when the server turns off party queueing.
+- `JoinByCodeAsync` throws with `IsCodeCooldown` after too many wrong codes. Wait for the server-set `RetryAfter`.
+- `ListInvitesAsync` is the source of truth for invites. Inviting a friend who already has a pending invite sends no new `party_invite` event.
+- `PartyMember.Attributes` come back exactly as the member sent them, HTML included. Escape them before you display them.
 
 ## Defaults
 
-- **HTTP retries:** up to three attempts in total, with capped full-jitter exponential backoff, inside one call budget (`GGScaleClientOptions.OverallTimeout`, 100 seconds). Only requests that are safe to repeat are retried: `GET` and `HEAD`, and writes with an `Idempotency-Key` (`Parties.QueueAsync`, `Parties.RematchAsync`) or `GGRequest.Idempotent`. Only connection failures, timeouts, and 408, 429, 502, 503 and 504 are retried, and a `Retry-After` from the server is followed. Other writes are never retried, because a lost response does not show whether the write ran. A 503 `party_enqueue_disabled` is never retried. One more case: any request, a write too, is retried when the failure proves that the request never reached the server: name resolution failed for now, or the connection could not open (refused, no route). Such an exception has `Code` `connect_failed`. A host name that does not exist has `Code` `host_not_found` and is not retried for any method, because a retry cannot help. A connect timeout, a reset after the connection opened, and a TLS or certificate failure are not this case. The same backoff, budget and attempt limit apply. Configure with `GGScaleClientOptions.Retry`.
-- **Realtime reconnect:** on. After an abnormal close, the client reconnects with capped full-jitter backoff, at most 5 attempts for one outage (`RealtimeOptions.MaxReconnectAttempts`). A handshake `Retry-After` is followed. The session refreshes before each connect. The server does not send again the events of an outage, so when `RealtimeClient.StateChanged` reports `Connected` with `IsReconnect` true, read the state again (tickets, invites, party, presence). Set `RealtimeOptions.AutoReconnect = false` to turn reconnect off.
+### HTTP retries
+
+A call makes up to three attempts, with capped full-jitter exponential backoff, inside one call budget (`GGScaleClientOptions.OverallTimeout`, 100 seconds). Configure retries with `GGScaleClientOptions.Retry`.
+
+The SDK retries only requests that are safe to repeat: `GET`, `HEAD`, and writes with an `Idempotency-Key` (`Parties.QueueAsync`, `Parties.RematchAsync`) or `GGRequest.Idempotent`. It retries on connection failures, timeouts, and 408, 429, 502, 503, and 504, and it follows the server's `Retry-After`. It never retries other writes, because a lost response does not show whether the write ran, and it never retries a 503 `party_enqueue_disabled`.
+
+One exception: the SDK retries any request, writes included, when the request provably never reached the server. That covers a temporary name-resolution failure or a connection that could not open (refused, no route). These failures have `Code` `connect_failed` and use the same backoff, budget, and attempt limit. A connect timeout, a reset after the connection opened, and a TLS or certificate failure do not count. A host name that does not exist has `Code` `host_not_found` and is never retried.
+
+### Realtime reconnect
+
+Reconnect is on by default. After an abnormal close, the client reconnects with capped full-jitter backoff, up to 5 attempts per outage (`RealtimeOptions.MaxReconnectAttempts`). It follows a handshake `Retry-After` and refreshes the session before each connect. Set `RealtimeOptions.AutoReconnect = false` to turn it off.
+
+The server does not resend events missed during an outage. When `RealtimeClient.StateChanged` reports `Connected` with `IsReconnect` true, read tickets, invites, party, and presence again.
 
 ## Errors
 
-Every failure is a `GGScaleException`. `Kind` tells the class of failure: `HttpError` (a response came), `Connection`, `Timeout`, `Decode`, `Handshake` (a WebSocket connect failed), and `ConnectionClosed` (an open WebSocket dropped and the client stopped; see `CloseCode`). For an HTTP error, read `Status`, `Detail`, `Details`, `RetryAfter` and `RequestId`, and use the flags: `IsUnauthorized`, `IsForbidden`, `IsNotFound`, `IsConflict`, `IsRateLimited`, `IsBadRequest`, `IsValidationError`, `IsTicketAlreadyActive`, `IsStaleVersion`, `IsPartyEnqueueDisabled`, `IsCodeCooldown`, `IsDeleteRequestedByTeam`.
+Every failure is a `GGScaleException`. `Kind` gives the class of failure: `HttpError` (a response arrived), `Connection`, `Timeout`, `Decode`, `Handshake` (a WebSocket connect failed), or `ConnectionClosed` (an open WebSocket dropped and the client stopped; see `CloseCode`). HTTP errors carry `Status`, `Detail`, `Details`, `RetryAfter`, and `RequestId`, plus these flags: `IsUnauthorized`, `IsForbidden`, `IsNotFound`, `IsConflict`, `IsRateLimited`, `IsBadRequest`, `IsValidationError`, `IsTicketAlreadyActive`, `IsStaleVersion`, `IsPartyEnqueueDisabled`, `IsCodeCooldown`, `IsDeleteRequestedByTeam`.
 
-`Auth.CancelDeleteAsync` throws with `IsDeleteRequestedByTeam` (and `IsForbidden`) when the game's team requested the deletion. Only the team can cancel it. A 403 for a revoked key or a disabled tenant does not set `IsDeleteRequestedByTeam`.
+`Auth.CancelDeleteAsync` throws with `IsDeleteRequestedByTeam` (and `IsForbidden`) when the game's team requested the deletion, because only the team can cancel it. A 403 for a revoked key or a disabled tenant does not set `IsDeleteRequestedByTeam`.
 
 ## Development
 
@@ -184,13 +199,13 @@ make test-integration  # full-stack tests against a real server (Docker)
 
 ### API contract
 
-The [gg-scale repository](https://github.com/automoto/gg-scale/blob/main/openapi.yaml) owns `openapi.yaml`, the only contract for this SDK. There is no copy of it here. `make openapi-check` downloads the spec of the server tag `SPEC_REF` (now `v0.9.71`) and runs `ContractTests`. The test checks that each operation occurs as `Operation = "METHOD path"` in `src/GGScale`, that each secret-key operation is in `ServerService.cs`, and that no other operation is only there. CI runs it.
+`openapi.yaml` in the [gg-scale repository](https://github.com/automoto/gg-scale/blob/main/openapi.yaml) is the only contract for this SDK, and there is no copy here. `make openapi-check` downloads the spec at server tag `SPEC_REF` (currently `v0.9.71`) and runs `ContractTests`. They check that every operation appears as `Operation = "METHOD path"` in `src/GGScale`, that every secret-key operation is in `ServerService.cs`, and that no other operation appears only there. CI runs this check.
 
-Use a local spec with `make openapi-check SPEC=../../ggscale/openapi.yaml`. A sync with a new server release changes only `SPEC_REF`. Without `GGSCALE_SPEC`, `make test` does not check the spec, so unit tests stay offline.
+To use a local spec, run `make openapi-check SPEC=../../ggscale/openapi.yaml`. Syncing to a new server release changes only `SPEC_REF`. Without `GGSCALE_SPEC`, `make test` skips the spec check, so unit tests stay offline.
 
 ### Integration tests
 
-`make test-integration` starts Postgres and `ghcr.io/automoto/gg-scale:v0.9.71` with docker compose (set `GGSCALE_IMAGE` for another image), seeds a tenant, a project, and API keys with `integration/seed.sql`, runs `tests/GGScale.IntegrationTests` against `127.0.0.1:18081`, and stops the stack. Set `KEEP_STACK=1` to keep the stack running.
+`make test-integration` starts Postgres and `ghcr.io/automoto/gg-scale:v0.9.71` with docker compose (set `GGSCALE_IMAGE` to use another image). It seeds a tenant, a project, and API keys from `integration/seed.sql`, runs `tests/GGScale.IntegrationTests` against `127.0.0.1:18081`, and then stops the stack. Set `KEEP_STACK=1` to leave it running.
 
 ## License
 
