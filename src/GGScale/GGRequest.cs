@@ -46,10 +46,18 @@ namespace GGScale
         public string Operation { get; set; } = string.Empty;
 
         /// <summary>
-        /// Marks a POST/PATCH request as safe to replay so the retry layer
-        /// may retry it. GET/HEAD/PUT/DELETE are replayable by default.
+        /// Marks a write (POST, PUT, PATCH, DELETE) as safe to replay, so the
+        /// retry layer may retry it. Only GET and HEAD, and writes with an
+        /// Idempotency-Key header, are replayable without this flag.
         /// </summary>
         public bool Idempotent { get; set; }
+
+        /// <summary>
+        /// Extra request headers, for example "Idempotency-Key". Names are
+        /// not case-sensitive. A write with an Idempotency-Key is retried
+        /// like a read, because the server runs it only once.
+        /// </summary>
+        public IDictionary<string, string> Headers { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// The client-generated X-Request-Id, assigned once per logical call

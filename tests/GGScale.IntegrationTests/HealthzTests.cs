@@ -23,5 +23,15 @@ namespace GGScale.IntegrationTests
             using var resp = await http.GetAsync(new Uri(BaseUrl + "/v1/healthz"));
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         }
+
+        [Fact]
+        public async Task Health_GetAsync_reports_ok()
+        {
+            using var c = new GGScaleClient(new GGScaleClientOptions { BaseUrl = BaseUrl, ApiKey = ItFixture.PublishableKey });
+
+            var health = await c.Health.GetAsync();
+
+            Assert.Equal("ok", health.Status);
+        }
     }
 }

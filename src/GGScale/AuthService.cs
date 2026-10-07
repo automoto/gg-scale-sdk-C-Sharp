@@ -22,9 +22,29 @@ namespace GGScale
     }
 
     /// <summary>
+    /// A scheduled deletion returned by <see cref="AuthService.RequestDeleteAsync"/>.
+    /// The player's data in this project is purged permanently when the
+    /// server's grace period ends.
+    /// </summary>
+    public sealed class PendingDelete
+    {
+        internal PendingDelete(DateTimeOffset deleteRequestedAt, DateTimeOffset scheduledPurgeAt)
+        {
+            DeleteRequestedAt = deleteRequestedAt;
+            ScheduledPurgeAt = scheduledPurgeAt;
+        }
+
+        /// <summary>When the deletion was requested.</summary>
+        public DateTimeOffset DeleteRequestedAt { get; }
+
+        /// <summary>When the server purges the data.</summary>
+        public DateTimeOffset ScheduledPurgeAt { get; }
+    }
+
+    /// <summary>
     /// The /v1/auth operations that are not authentication strategies —
     /// signup, verification, refresh, logout, account linking, password
-    /// management, and self-disable. Reach it via
+    /// management, self-disable, and data deletion. Reach it via
     /// <see cref="GGScaleClient.Auth"/>.
     /// </summary>
     public sealed class AuthService
@@ -183,6 +203,59 @@ namespace GGScale
                 Path = "/v1/auth/disable",
                 Operation = "POST /v1/auth/disable",
                 Body = body,
+            }, cancellationToken);
+        }
+
+        /// <summary>
+        /// Schedules permanent deletion of the calling player's data in this
+        /// project. The server revokes every session, so the client clears
+        /// its session on success. Data in other projects and the global
+        /// account stay. Credentialed players must send their password;
+        /// anonymous players pass null. Players with credentials can call
+        /// <see cref="CancelDeleteAsync"/> until the purge runs. A second
+        /// request throws with IsConflict. Requires a player session.
+        /// </summary>
+        public async Task<PendingDelete> RequestDeleteAsync(string? password, CancellationToken cancellationToken = default)
+        {
+            var body = JsonValue.NewObject();
+            if (!string.IsNullOrEmpty(password))
+            {
+                body.Set("password", JsonValue.Of(password!));
+            }
+            var resp = await Client.CallProtectedAsync(new GGRequest
+            {
+                Method = "POST",
+                Path = "/v1/auth/delete",
+                Operation = "POST /v1/auth/delete",
+                Body = body,
+            }, cancellationToken).ConfigureAwait(false);
+            Client.SetSession(null);
+            return new PendingDelete(
+                resp.OptTime("delete_requested_at") ?? DateTimeOffset.MinValue,
+                resp.OptTime("scheduled_purge_at") ?? DateTimeOffset.MinValue);
+        }
+
+        /// <summary>
+        /// Cancels a pending deletion and enables sign-in again. It takes the
+        /// email and password, not a session, because
+        /// <see cref="RequestDeleteAsync"/> revoked every session. The server
+        /// answers 404 (IsNotFound) for an unknown email, a wrong password,
+        /// and no pending deletion, so a failure tells nothing about the
+        /// account. When the game's team requested the deletion, the server
+        /// answers 403 and the exception has IsDeleteRequestedByTeam set:
+        /// only the team can cancel it.
+        /// </summary>
+        public Task CancelDeleteAsync(string email, string password, CancellationToken cancellationToken = default)
+        {
+            return _transport.CallAsync(new GGRequest
+            {
+                Method = "POST",
+                Path = "/v1/auth/delete/cancel",
+                Operation = "POST /v1/auth/delete/cancel",
+                ApiKey = _apiKey,
+                Body = JsonValue.NewObject()
+                    .Set("email", JsonValue.Of(email))
+                    .Set("password", JsonValue.Of(password)),
             }, cancellationToken);
         }
 

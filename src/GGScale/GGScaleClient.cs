@@ -75,6 +75,9 @@ namespace GGScale
     /// </summary>
     public sealed class GGScaleClient : IDisposable
     {
+        /// <summary>The spec route of the realtime WebSocket.</summary>
+        internal const string RealtimeOperation = "GET /v1/ws";
+
         private static readonly TimeSpan RefreshWindow = TimeSpan.FromSeconds(30);
 
         private readonly object _sessionLock = new object();
@@ -147,6 +150,9 @@ namespace GGScale
             Presence = new PresenceService(this);
             Account = new AccountService(this);
             Server = new ServerService(Transport, ApiKey);
+            Health = new HealthService(Transport);
+            Realtime = new RealtimeService(this);
+            Parties = new PartiesService(this);
         }
 
         /// <summary>Auth operations that are not login strategies (signup, verify, refresh, logout).</summary>
@@ -192,11 +198,21 @@ namespace GGScale
         public AccountService Account { get; }
 
         /// <summary>
-        /// Server-tier endpoints (player session verification, player
-        /// remote addresses) for game-server workloads. Authenticates with
-        /// the secret API key only — no player session required.
+        /// Server-tier operations (player session verification, fleet
+        /// heartbeat, player storage, scores, remote addresses) for
+        /// game-server workloads. Needs the secret API key and no player
+        /// session.
         /// </summary>
         public ServerService Server { get; }
+
+        /// <summary>Server liveness (no API key or session needed).</summary>
+        public HealthService Health { get; }
+
+        /// <summary>Realtime REST operations (one-time WebSocket tickets).</summary>
+        public RealtimeService Realtime { get; }
+
+        /// <summary>Parties: a group of players that queues as one unit.</summary>
+        public PartiesService Parties { get; }
 
         /// <summary>
         /// The transport every service call goes through, including the
@@ -296,6 +312,23 @@ namespace GGScale
             }
         }
 
+        /// <summary>Sends a WebSocket record to the logger; a logger fault never breaks the caller.</summary>
+        internal void EmitWsEvent(GGWsEventRecord record)
+        {
+            if (_logger == null)
+            {
+                return;
+            }
+            try
+            {
+                _logger.OnWsEvent(record);
+            }
+            catch (Exception)
+            {
+                // Observability hooks must never break calls.
+            }
+        }
+
         internal Session RequireSession()
         {
             lock (_sessionLock)
@@ -380,6 +413,10 @@ namespace GGScale
         /// answered), buffers messages in a bounded queue, and — per
         /// options — reconnects with jittered backoff after retryable
         /// drops. A 401 on the initial upgrade is not auto-retried.
+        /// When the adapter implements <see cref="ITicketSocketAdapter"/>,
+        /// each connect gets a new one-time ticket and sends no headers.
+        /// The server keeps one socket per player: a new connection closes
+        /// the player's older one, so use one realtime reader at a time.
         /// </summary>
         public async Task<RealtimeClient> DialRealtimeAsync(RealtimeOptions? options, ISocketAdapter? adapter = null, CancellationToken cancellationToken = default)
         {
@@ -416,6 +453,15 @@ namespace GGScale
                     throw new GGScaleException(ex.Kind, GGScaleException.SessionRefreshFailedCode,
                         "session refresh before the WebSocket dial failed", ex);
                 }
+                if (socket is ITicketSocketAdapter ticketSocket)
+                {
+                    await ticketSocket.ConnectWithTicketAsync(async c =>
+                    {
+                        var ticket = await Realtime.CreateTicketAsync(c).ConfigureAwait(false);
+                        return TicketUri(uri, ticket.Ticket);
+                    }, ct).ConfigureAwait(false);
+                    return;
+                }
                 var session = RequireSession();
                 await socket.ConnectAsync(uri, ApiKey, session.AccessToken, ct).ConfigureAwait(false);
             }
@@ -424,6 +470,10 @@ namespace GGScale
             await client.StartAsync(cancellationToken).ConfigureAwait(false);
             return client;
         }
+
+        /// <summary>The WebSocket URL with a one-time ticket and no other query.</summary>
+        internal static Uri TicketUri(Uri wsUri, string ticket) =>
+            new Uri(wsUri.GetLeftPart(UriPartial.Path) + "?ticket=" + Uri.EscapeDataString(ticket));
 
         private static string ReplaceScheme(string url, string prefix, string replacement)
         {

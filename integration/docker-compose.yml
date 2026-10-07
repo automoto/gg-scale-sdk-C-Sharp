@@ -24,7 +24,10 @@ services:
       retries: 30
 
   ggscale:
-    image: buildwrangler/ggscale:v0.9.3
+    # Pinned to an immutable release tag so contract tests can't silently
+    # drift against a moving `latest`. Override with GGSCALE_IMAGE. Party
+    # queue is on by default from v0.9.68, so no party setting is needed.
+    image: ${GGSCALE_IMAGE:-ghcr.io/automoto/gg-scale:v0.9.71}
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,6 +43,12 @@ services:
       # container. The control panel is likewise not under test.
       MAIL_PROVIDER: noop
       CONTROL_PANEL_DISABLED: "true"
+      # The same TURN relay settings as the Go SDK's stack. There is no real
+      # TURN server; the advertised URI is intentionally non-routable.
+      FEATURE_P2P_RELAY_ENABLED: "true"
+      # Must be >= 32 bytes (server enforces this when relay is enabled).
+      RELAY_SHARED_SECRET: integration-relay-shared-secret-0123456789
+      RELAY_URLS: turn:relay.invalid:3478?transport=udp
     ports:
       # 18081: distinct from the dev server (8080) and the Go SDK's
       # integration stack (18080).

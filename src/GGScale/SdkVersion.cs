@@ -4,6 +4,6 @@ namespace GGScale
     public static class SdkVersion
     {
         /// <summary>Semantic version of this SDK build.</summary>
-        public const string Value = "0.2.0";
+        public const string Value = "0.3.0";
     }
 }

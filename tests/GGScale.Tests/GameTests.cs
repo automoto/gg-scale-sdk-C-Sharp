@@ -371,12 +371,12 @@ namespace GGScale.Tests
     public class FleetsServiceTests
     {
         [Fact]
-        public async Task SendHeartbeat_uses_api_key_without_session()
+        public async Task FleetHeartbeat_uses_api_key_without_session()
         {
             var ft = new FakeTransport();
             var c = new GGScaleClient(new GGScaleClientOptions { ApiKey = "secret-k", Transport = ft });
 
-            await c.Fleets.SendHeartbeatAsync(new FleetHeartbeat
+            await c.Server.FleetHeartbeatAsync(new FleetHeartbeat
             {
                 AgonesName = "srv-1",
                 Fleet = "docker-default",
@@ -391,11 +391,11 @@ namespace GGScale.Tests
         }
 
         [Fact]
-        public async Task SendHeartbeat_validates_required_fields()
+        public async Task FleetHeartbeat_validates_required_fields()
         {
             var c = new GGScaleClient(new GGScaleClientOptions { ApiKey = "k", Transport = new FakeTransport() });
             await Assert.ThrowsAsync<ArgumentException>(
-                () => c.Fleets.SendHeartbeatAsync(new FleetHeartbeat { Fleet = "f", Address = "a", MaxPlayers = 1 }));
+                () => c.Server.FleetHeartbeatAsync(new FleetHeartbeat { Fleet = "f", Address = "a", MaxPlayers = 1 }));
         }
 
         [Fact]

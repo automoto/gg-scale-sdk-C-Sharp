@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -416,6 +417,32 @@ namespace GGScale
             }
             var resp = await _client.CallProtectedAsync(req, cancellationToken).ConfigureAwait(false);
             return LeaderboardPeriodsPage.FromJson(resp);
+        }
+
+        /// <summary>
+        /// Iterates a board's period history across every page, newest
+        /// first. It reads pages only when the enumeration needs them. Pass
+        /// limit 0 for the server default page size.
+        /// </summary>
+        public async IAsyncEnumerable<LeaderboardPeriodSummary> ListAllPeriodsAsync(
+            long leaderboardId,
+            int limit = 0,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            string? cursor = null;
+            while (true)
+            {
+                var page = await PeriodsAsync(leaderboardId, limit, cursor, cancellationToken).ConfigureAwait(false);
+                foreach (var p in page.Periods)
+                {
+                    yield return p;
+                }
+                if (page.NextCursor.Length == 0)
+                {
+                    yield break;
+                }
+                cursor = page.NextCursor;
+            }
         }
 
         /// <summary>

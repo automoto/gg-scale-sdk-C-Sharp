@@ -111,9 +111,9 @@ namespace GGScale
 
     /// <summary>
     /// Server-browser endpoints: game clients list live servers with a
-    /// player session; game-server processes heartbeat with a secret API
-    /// key (every ~5 s; entries expire after ~15 s without one). Reach it
-    /// via <see cref="GGScaleClient.Fleets"/>.
+    /// player session. Game-server processes send the heartbeat with
+    /// <see cref="ServerService.FleetHeartbeatAsync"/>. Reach it via
+    /// <see cref="GGScaleClient.Fleets"/>.
     /// </summary>
     public sealed class FleetsService
     {
@@ -122,32 +122,13 @@ namespace GGScale
         internal FleetsService(GGScaleClient client) => _client = client;
 
         /// <summary>
-        /// Announces this game-server's liveness and player count. Requires
-        /// a secret-tier API key on the client; no player session.
+        /// Announces this game-server's liveness and player count. Deprecated:
+        /// use <see cref="ServerService.FleetHeartbeatAsync"/>. The heartbeat
+        /// needs a secret API key, so it is on the server client.
         /// </summary>
-        public Task SendHeartbeatAsync(FleetHeartbeat heartbeat, CancellationToken cancellationToken = default)
-        {
-            if (heartbeat == null)
-            {
-                throw new ArgumentNullException(nameof(heartbeat));
-            }
-            if (string.IsNullOrEmpty(heartbeat.AgonesName) || string.IsNullOrEmpty(heartbeat.Fleet) || string.IsNullOrEmpty(heartbeat.Address))
-            {
-                throw new ArgumentException("heartbeat requires AgonesName, Fleet, and Address", nameof(heartbeat));
-            }
-            if (heartbeat.MaxPlayers <= 0)
-            {
-                throw new ArgumentException("heartbeat MaxPlayers must be > 0", nameof(heartbeat));
-            }
-            return _client.Transport.CallAsync(new GGRequest
-            {
-                Method = "POST",
-                Path = "/v1/fleets/heartbeat",
-                Operation = "POST /v1/fleets/heartbeat",
-                ApiKey = _client.ApiKey,
-                Body = heartbeat.ToJson(),
-            }, cancellationToken);
-        }
+        [Obsolete("Use GGScaleClient.Server.FleetHeartbeatAsync.")]
+        public Task SendHeartbeatAsync(FleetHeartbeat heartbeat, CancellationToken cancellationToken = default) =>
+            _client.Server.FleetHeartbeatAsync(heartbeat, cancellationToken);
 
         /// <summary>Returns the live game-servers for the fleet. Requires a player session.</summary>
         public async Task<IReadOnlyList<GameServerInfo>> ListServersAsync(string fleet, CancellationToken cancellationToken = default)

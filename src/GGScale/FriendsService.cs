@@ -52,7 +52,10 @@ namespace GGScale
         /// <summary>Edge status: pending, accepted, rejected, or blocked.</summary>
         public string Status { get; }
 
-        /// <summary>The friend's email, when shared.</summary>
+        /// <summary>
+        /// The friend's email. The server sets it only for accepted
+        /// friends; pending and blocked entries have no email (null).
+        /// </summary>
         public string? Email { get; }
 
         /// <summary>The friend's display name, when set.</summary>
@@ -198,17 +201,17 @@ namespace GGScale
         /// </summary>
         public async Task<string> RequestAsync(long playerId, CancellationToken cancellationToken = default)
         {
-            var resp = await PostAsync(playerId, "/request", cancellationToken).ConfigureAwait(false);
+            var resp = await PostAsync(new GGRequest { Path = FriendPath(playerId) + "/request", Operation = "POST /v1/friends/{player_id}/request" }, cancellationToken).ConfigureAwait(false);
             return resp.OptString("status") ?? string.Empty;
         }
 
         /// <summary>Accepts a pending request; IsConflict when not acceptable.</summary>
         public Task AcceptAsync(long playerId, CancellationToken cancellationToken = default) =>
-            PostAsync(playerId, "/accept", cancellationToken);
+            PostAsync(new GGRequest { Path = FriendPath(playerId) + "/accept", Operation = "POST /v1/friends/{player_id}/accept" }, cancellationToken);
 
         /// <summary>Declines a pending (or revokes an accepted) request.</summary>
         public Task RejectAsync(long playerId, CancellationToken cancellationToken = default) =>
-            PostAsync(playerId, "/reject", cancellationToken);
+            PostAsync(new GGRequest { Path = FriendPath(playerId) + "/reject", Operation = "POST /v1/friends/{player_id}/reject" }, cancellationToken);
 
         /// <summary>Deletes the friend edge in either direction.</summary>
         public Task RemoveAsync(long playerId, CancellationToken cancellationToken = default)
@@ -227,11 +230,11 @@ namespace GGScale
         /// block).
         /// </summary>
         public Task BlockAsync(long playerId, CancellationToken cancellationToken = default) =>
-            PostAsync(playerId, "/block", cancellationToken);
+            PostAsync(new GGRequest { Path = FriendPath(playerId) + "/block", Operation = "POST /v1/friends/{player_id}/block" }, cancellationToken);
 
         /// <summary>Removes a block; does not restore any severed friendship.</summary>
         public Task UnblockAsync(long playerId, CancellationToken cancellationToken = default) =>
-            PostAsync(playerId, "/unblock", cancellationToken);
+            PostAsync(new GGRequest { Path = FriendPath(playerId) + "/unblock", Operation = "POST /v1/friends/{player_id}/unblock" }, cancellationToken);
 
         /// <summary>
         /// Returns the remote addresses an ACCEPTED friend published (see
@@ -249,14 +252,10 @@ namespace GGScale
             return RemoteAddr.ListFromJson(resp);
         }
 
-        private Task<JsonValue> PostAsync(long playerId, string action, CancellationToken cancellationToken)
+        private Task<JsonValue> PostAsync(GGRequest request, CancellationToken cancellationToken)
         {
-            return _client.CallProtectedAsync(new GGRequest
-            {
-                Method = "POST",
-                Path = FriendPath(playerId) + action,
-                Operation = "POST /v1/friends/{player_id}" + action,
-            }, cancellationToken);
+            request.Method = "POST";
+            return _client.CallProtectedAsync(request, cancellationToken);
         }
 
         private static string FriendPath(long playerId) =>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -28,10 +29,11 @@ namespace GGScale
     }
 
     /// <summary>
-    /// The /v1/server endpoints for server-tier workloads (game servers,
-    /// matchmakers) authenticating with a secret API key — no player
-    /// session. Publishable keys are rejected with IsForbidden. Reach it
-    /// via <see cref="GGScaleClient.Server"/>.
+    /// The operations for server-tier workloads (game servers,
+    /// matchmakers) that need a secret API key and no player session: the
+    /// /v1/server endpoints and the fleet heartbeat. Publishable keys are
+    /// rejected with IsForbidden. Reach it via
+    /// <see cref="GGScaleClient.Server"/>.
     /// </summary>
     public sealed class ServerService
     {
@@ -69,6 +71,35 @@ namespace GGScale
                 resp.Value.OptLong("player_id"),
                 resp.Value.OptString("external_id") ?? string.Empty,
                 resp.Value.OptString("email") ?? string.Empty);
+        }
+
+        /// <summary>
+        /// Announces this game-server's liveness and player count. Call it
+        /// every 5 seconds; the server registry drops a server after about
+        /// 15 seconds without a heartbeat. Requires a secret API key.
+        /// </summary>
+        public Task FleetHeartbeatAsync(FleetHeartbeat heartbeat, CancellationToken cancellationToken = default)
+        {
+            if (heartbeat == null)
+            {
+                throw new ArgumentNullException(nameof(heartbeat));
+            }
+            if (string.IsNullOrEmpty(heartbeat.AgonesName) || string.IsNullOrEmpty(heartbeat.Fleet) || string.IsNullOrEmpty(heartbeat.Address))
+            {
+                throw new ArgumentException("heartbeat requires AgonesName, Fleet, and Address", nameof(heartbeat));
+            }
+            if (heartbeat.MaxPlayers <= 0)
+            {
+                throw new ArgumentException("heartbeat MaxPlayers must be > 0", nameof(heartbeat));
+            }
+            return _transport.CallAsync(new GGRequest
+            {
+                Method = "POST",
+                Path = "/v1/fleets/heartbeat",
+                Operation = "POST /v1/fleets/heartbeat",
+                ApiKey = _apiKey,
+                Body = heartbeat.ToJson(),
+            }, cancellationToken);
         }
 
         /// <summary>
@@ -176,6 +207,37 @@ namespace GGScale
             }
             var resp = await _transport.CallAsync(req, cancellationToken).ConfigureAwait(false);
             return StoragePage.FromJson(resp.Value);
+        }
+
+        /// <summary>
+        /// Iterates a player's storage objects across every page. It reads
+        /// pages only when the enumeration needs them. The caller's options
+        /// object does not change.
+        /// </summary>
+        public async IAsyncEnumerable<StorageObject> ListAllStorageAsync(
+            long playerId,
+            StorageListOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var page = new StorageListOptions
+            {
+                KeyPrefix = options?.KeyPrefix,
+                Limit = options?.Limit ?? 0,
+                Cursor = options?.Cursor,
+            };
+            while (true)
+            {
+                var result = await ListPlayerStorageAsync(playerId, page, cancellationToken).ConfigureAwait(false);
+                foreach (var item in result.Items)
+                {
+                    yield return item;
+                }
+                if (result.NextCursor.Length == 0)
+                {
+                    yield break;
+                }
+                page.Cursor = result.NextCursor;
+            }
         }
 
         private static string PlayerPath(long playerId) =>

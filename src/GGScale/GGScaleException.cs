@@ -56,6 +56,19 @@ namespace GGScale
         /// </summary>
         internal const string SessionRefreshFailedCode = "session_refresh_failed";
 
+        /// <summary>
+        /// The code marking a connection failure that proves the request was
+        /// never sent: name resolution failed for now, or the connection
+        /// could not open (refused, no route). Any method may retry it.
+        /// </summary>
+        internal const string NotSentCode = "connect_failed";
+
+        /// <summary>
+        /// The code for a host name that does not exist. A retry cannot fix
+        /// it, so no method retries it.
+        /// </summary>
+        internal const string HostNotFoundCode = "host_not_found";
+
         private static readonly IReadOnlyList<GGErrorDetail> NoDetails = Array.Empty<GGErrorDetail>();
 
         /// <summary>Creates an exception for a failed API call.</summary>
@@ -118,6 +131,12 @@ namespace GGScale
         /// <summary>The problem-details <c>instance</c>; empty when not provided.</summary>
         public string Instance { get; internal set; } = string.Empty;
 
+        /// <summary>
+        /// The WebSocket close code for a <see cref="GGFailureKind.ConnectionClosed"/>
+        /// failure, when the peer sent one; null otherwise.
+        /// </summary>
+        public int? CloseCode { get; internal set; }
+
         /// <summary>The X-Request-Id correlating this call, when known.</summary>
         public string? RequestId { get; internal set; }
 
@@ -135,6 +154,7 @@ namespace GGScale
         /// </summary>
         public bool IsRetryable =>
             Code != CertificateErrorCode &&
+            Code != HostNotFoundCode &&
             (Kind == GGFailureKind.Connection ||
              Kind == GGFailureKind.Timeout ||
              (Kind == GGFailureKind.HttpError &&
@@ -189,7 +209,35 @@ namespace GGScale
         /// player already has an active ticket. Read <see cref="ActiveTicketId"/>
         /// for the id to cancel.
         /// </summary>
-        public bool IsTicketAlreadyActive => Status == 409 && Detail == "ticket_already_active";
+        public bool IsTicketAlreadyActive => Status == 409 && HasSlug("ticket_already_active");
+
+        /// <summary>
+        /// True for the 409 a party write returns when expected_version is
+        /// not the party's current version. Read the party again and retry.
+        /// </summary>
+        public bool IsStaleVersion => Status == 409 && HasSlug("stale_version");
+
+        /// <summary>
+        /// True for the 503 from party queue and rematch when the server
+        /// turns party queue off. The SDK never retries it.
+        /// </summary>
+        public bool IsPartyEnqueueDisabled => Status == 503 && HasSlug("party_enqueue_disabled");
+
+        /// <summary>
+        /// True for the 429 from JoinByCodeAsync after too many wrong party
+        /// codes. Wait for <see cref="RetryAfter"/>; the server sets it.
+        /// </summary>
+        public bool IsCodeCooldown => Status == 429 && HasSlug("code_redemption_cooldown");
+
+        /// <summary>
+        /// True for the 403 from CancelDeleteAsync when the game's team
+        /// requested the deletion. Only the team can cancel it. A 403 for a
+        /// revoked key or a disabled tenant is not this case.
+        /// </summary>
+        public bool IsDeleteRequestedByTeam => Status == 403 && HasSlug("delete_requested_by_team");
+
+        /// <summary>The server puts stable slugs in Problem Details detail (or code).</summary>
+        private bool HasSlug(string slug) => Detail == slug || Code == slug;
 
         /// <summary>
         /// The id of the ticket already queued when this is a

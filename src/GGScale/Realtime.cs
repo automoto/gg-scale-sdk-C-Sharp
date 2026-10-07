@@ -66,7 +66,29 @@ namespace GGScale
         Task CloseAsync();
     }
 
-    /// <summary>Default <see cref="ISocketAdapter"/> over ClientWebSocket.</summary>
+    /// <summary>
+    /// A socket adapter that connects with a one-time ticket in the URL and
+    /// sends no headers, for platforms that cannot set WebSocket headers
+    /// (for example a browser or Unity WebGL). When the adapter implements
+    /// this interface, the client calls <see cref="ConnectWithTicketAsync"/>
+    /// instead of <see cref="ISocketAdapter.ConnectAsync"/>, for the first
+    /// connect and for each reconnect. The SDK does not ship such an
+    /// adapter; a game writes it for its platform.
+    /// </summary>
+    public interface ITicketSocketAdapter : ISocketAdapter
+    {
+        /// <summary>
+        /// Opens (or re-opens) the connection. Call
+        /// <paramref name="ticketUri"/> once for each connect: it gets a new
+        /// one-time ticket (<see cref="RealtimeService.CreateTicketAsync"/>)
+        /// and returns the URL /v1/ws?ticket=&lt;ticket&gt;. A ticket works
+        /// only once. Send no auth headers. A rejected upgrade throws
+        /// <see cref="GGScaleException"/> with Kind Handshake.
+        /// </summary>
+        Task ConnectWithTicketAsync(Func<CancellationToken, Task<Uri>> ticketUri, CancellationToken cancellationToken);
+    }
+
+    /// <summary>Default <see cref="ISocketAdapter"/> over ClientWebSocket. It sends headers.</summary>
     public sealed class WebSocketAdapter : ISocketAdapter
     {
         private readonly int _maxInboundMessageBytes;
@@ -268,8 +290,18 @@ namespace GGScale
     /// <summary>Configuration for <see cref="RealtimeClient"/>.</summary>
     public sealed class RealtimeOptions
     {
-        /// <summary>Reconnect automatically after retryable drops. Default true.</summary>
+        /// <summary>
+        /// Reconnect automatically after retryable drops. Default true. Set
+        /// false to turn reconnect off: a drop then closes the client.
+        /// </summary>
         public bool AutoReconnect { get; set; } = true;
+
+        /// <summary>
+        /// The most reconnect attempts for one outage. Default 5; 0 means no
+        /// limit. When the attempts run out, the client closes with a
+        /// <see cref="GGFailureKind.ConnectionClosed"/> error.
+        /// </summary>
+        public int MaxReconnectAttempts { get; set; } = 5;
 
         /// <summary>
         /// Buffered message cap. When the caller reads too slowly the
@@ -439,13 +471,21 @@ namespace GGScale
                         attempt = 0;
                     }
                     var outageStart = _clock.UtcNow;
+                    var outageAttempts = 0;
                     TimeSpan? retryAfterHint = null;
+                    Exception? lastError = null;
                     while (true)
                     {
                         if (ct.IsCancellationRequested)
                         {
                             return;
                         }
+                        if (_options.MaxReconnectAttempts > 0 && outageAttempts >= _options.MaxReconnectAttempts)
+                        {
+                            Terminal(closeCode, ConnectionClosedError(closeCode, "the reconnect attempts ran out", lastError));
+                            return;
+                        }
+                        outageAttempts++;
                         attempt++;
                         var delay = attempt == 1
                             ? TimeSpan.FromTicks((long)(_options.FirstReconnectMaxDelay.Ticks * NextUnitRandom()))
@@ -510,6 +550,7 @@ namespace GGScale
                                 return;
                             }
                             retryAfterHint = ex.RetryAfter;
+                            lastError = ex;
                             continue;
                         }
                         catch (Exception ex)
@@ -551,8 +592,19 @@ namespace GGScale
             new GGScaleException(GGFailureKind.Timeout, "ws_reconnect_timeout",
                 "the reconnect budget (ReconnectTimeout) was exhausted", inner);
 
+        private static GGScaleException ConnectionClosedError(int? closeCode, string message, Exception? inner) =>
+            new GGScaleException(GGFailureKind.ConnectionClosed, "ws_connection_closed", message, inner) { CloseCode = closeCode };
+
+        /// <summary>
+        /// Closes the client for good. A null error means the connection
+        /// dropped without a reconnect, so the state change gets a
+        /// ConnectionClosed error with the close code.
+        /// </summary>
         private void Terminal(int? closeCode, Exception? error)
         {
+            error ??= ConnectionClosedError(closeCode, closeCode == null
+                ? "the realtime connection closed"
+                : "the realtime connection closed with code " + closeCode.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), null);
             _queue.Complete();
             if (Interlocked.Exchange(ref _closed, 1) == 0)
             {

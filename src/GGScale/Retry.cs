@@ -6,9 +6,13 @@ namespace GGScale
 {
     /// <summary>
     /// Retry configuration. The SDK retries only requests that are safe to
-    /// replay (GET/HEAD/PUT/DELETE, or POST/PATCH explicitly marked
-    /// idempotent) and only for connection failures, timeouts, and HTTP
-    /// 408/429/502/503/504. All attempts and backoff waits stay inside
+    /// replay (GET and HEAD, writes with an Idempotency-Key header, and
+    /// writes marked <see cref="GGRequest.Idempotent"/>) and only for
+    /// connection failures, timeouts, and HTTP 408/429/502/503/504. A 503
+    /// party_enqueue_disabled is never retried, because it is a server
+    /// setting. Any method is retried when the failure proves the request
+    /// was never sent (DNS failure, connection refused, no route). All
+    /// attempts and backoff waits stay inside
     /// <see cref="GGScaleClientOptions.OverallTimeout"/>.
     /// </summary>
     public sealed class GGRetryPolicy
@@ -178,17 +182,24 @@ namespace GGScale
 
         private static bool ShouldRetry(GGRequest request, GGScaleException ex)
         {
-            if (!ex.IsRetryable)
+            if (!ex.IsRetryable || ex.IsPartyEnqueueDisabled)
             {
                 return false;
             }
+            if (ex.Code == GGScaleException.NotSentCode)
+            {
+                return true; // the request never reached the server
+            }
             var m = request.Method;
-            var safeMethod =
-                string.Equals(m, "GET", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m, "HEAD", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m, "PUT", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m, "DELETE", StringComparison.OrdinalIgnoreCase);
-            return safeMethod || request.Idempotent;
+            if (string.Equals(m, "GET", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(m, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            // A lost write response does not show whether the write ran. The
+            // server runs a write with an Idempotency-Key only once.
+            return request.Idempotent ||
+                (request.Headers.TryGetValue("Idempotency-Key", out var key) && !string.IsNullOrEmpty(key));
         }
 
         private static string RetryReason(GGScaleException ex)

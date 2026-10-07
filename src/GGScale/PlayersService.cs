@@ -104,7 +104,8 @@ namespace GGScale
         /// <summary>
         /// Resolves a friend code (see
         /// <see cref="ProfileService.RegenerateFriendCodeAsync"/>) to its
-        /// player. IsNotFound for unknown or rotated codes.
+        /// player. IsNotFound for a malformed, unknown, or rotated code, and
+        /// for a target that is disabled, pending deletion, or blocked.
         /// </summary>
         public async Task<PublicPlayer> ResolveFriendCodeAsync(string code, CancellationToken cancellationToken = default)
         {

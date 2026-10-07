@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -451,6 +452,36 @@ namespace GGScale
                 }
             }
             return new GameSessionPage(items, resp.OptString("next_cursor") ?? string.Empty);
+        }
+
+        /// <summary>
+        /// Iterates the session browser across every page. It reads pages
+        /// only when the enumeration needs them. The caller's options object
+        /// does not change.
+        /// </summary>
+        public async IAsyncEnumerable<PublicGameSessionEntry> ListAllAsync(
+            GameSessionListOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var page = new GameSessionListOptions
+            {
+                TitleId = options?.TitleId,
+                Limit = options?.Limit ?? 0,
+                Cursor = options?.Cursor,
+            };
+            while (true)
+            {
+                var result = await ListAsync(page, cancellationToken).ConfigureAwait(false);
+                foreach (var item in result.Items)
+                {
+                    yield return item;
+                }
+                if (result.NextCursor.Length == 0)
+                {
+                    yield break;
+                }
+                page.Cursor = result.NextCursor;
+            }
         }
 
         /// <summary>

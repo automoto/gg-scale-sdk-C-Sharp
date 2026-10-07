@@ -47,13 +47,23 @@ namespace GGScale
         /// <summary>The player's opaque attributes, visible to every matched peer.</summary>
         public JsonValue Attributes { get; }
 
+        /// <summary>The queue entry the player matched with; party members share one.</summary>
+        public long QueueEntryId { get; private set; }
+
+        /// <summary>The party the player queued with; 0 for a solo ticket.</summary>
+        public long PartyId { get; private set; }
+
         internal static RosterEntry FromJson(JsonValue v) =>
             new RosterEntry(
                 v.OptLong("player_id"),
                 v.OptString("region") ?? string.Empty,
                 ReadStringMap(v.Opt("string_properties")),
                 ReadNumberMap(v.Opt("numeric_properties")),
-                v.Opt("attributes") ?? JsonValue.Null);
+                v.Opt("attributes") ?? JsonValue.Null)
+            {
+                QueueEntryId = v.OptLong("queue_entry_id"),
+                PartyId = v.OptLong("party_id"),
+            };
 
         internal static IReadOnlyList<RosterEntry> ParseList(JsonValue? arr)
         {
@@ -68,7 +78,7 @@ namespace GGScale
             return list;
         }
 
-        private static Dictionary<string, string> ReadStringMap(JsonValue? v)
+        internal static Dictionary<string, string> ReadStringMap(JsonValue? v)
         {
             var map = new Dictionary<string, string>();
             if (v != null && v.Kind == JsonKind.Object)
@@ -81,7 +91,7 @@ namespace GGScale
             return map;
         }
 
-        private static Dictionary<string, double> ReadNumberMap(JsonValue? v)
+        internal static Dictionary<string, double> ReadNumberMap(JsonValue? v)
         {
             var map = new Dictionary<string, double>();
             if (v != null && v.Kind == JsonKind.Object)
@@ -186,6 +196,21 @@ namespace GGScale
         /// <summary>When the queued ticket expires; null when no TTL.</summary>
         public DateTimeOffset? ExpiresAt { get; }
 
+        /// <summary>The queue entry of this ticket; party members share one.</summary>
+        public long EntryId { get; private set; }
+
+        /// <summary>The party this ticket belongs to; 0 for a solo ticket.</summary>
+        public long PartyId { get; private set; }
+
+        /// <summary>The criteria query expression; empty when unset.</summary>
+        public string Query { get; private set; } = string.Empty;
+
+        /// <summary>The string match properties.</summary>
+        public IReadOnlyDictionary<string, string> StringProperties { get; private set; } = new Dictionary<string, string>();
+
+        /// <summary>The numeric match properties.</summary>
+        public IReadOnlyDictionary<string, double> NumericProperties { get; private set; } = new Dictionary<string, double>();
+
         internal static Ticket FromJson(JsonValue v) =>
             new Ticket(
                 v.OptLong("id"),
@@ -208,7 +233,14 @@ namespace GGScale
                 RosterEntry.ParseList(v.Opt("users")),
                 v.OptTime("created_at") ?? DateTimeOffset.MinValue,
                 v.OptTime("matched_at"),
-                v.OptTime("expires_at"));
+                v.OptTime("expires_at"))
+            {
+                EntryId = v.OptLong("entry_id"),
+                PartyId = v.OptLong("party_id"),
+                Query = v.OptString("query") ?? string.Empty,
+                StringProperties = RosterEntry.ReadStringMap(v.Opt("string_properties")),
+                NumericProperties = RosterEntry.ReadNumberMap(v.Opt("numeric_properties")),
+            };
     }
 
     /// <summary>Input to CreateTicketAsync / WaitForMatchAsync.</summary>
@@ -494,7 +526,10 @@ namespace GGScale
         /// returns the persisted match before its TTL. The socket is dialed
         /// BEFORE the ticket is created (a late subscriber would miss the
         /// push). A failed ticket throws <see cref="MatchFailedException"/>;
-        /// on cancellation the ticket is best-effort cancelled.
+        /// on cancellation the ticket is best-effort cancelled. The server
+        /// keeps one realtime socket per player, so this call closes the
+        /// player's other socket. A party member uses
+        /// <see cref="PartiesService.WaitForMatchAsync"/> instead.
         /// </summary>
         public async Task<MatchResult> WaitForMatchAsync(MatchRequest request, ISocketAdapter? adapter = null, CancellationToken cancellationToken = default)
         {
@@ -633,7 +668,7 @@ namespace GGScale
             return new P2PMatch(result, relay, joined, isHost);
         }
 
-        private static bool TryTerminal(Ticket t, out MatchResult? result, out MatchFailedException? failure)
+        internal static bool TryTerminal(Ticket t, out MatchResult? result, out MatchFailedException? failure)
         {
             result = null;
             failure = null;

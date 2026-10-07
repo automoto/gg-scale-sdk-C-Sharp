@@ -177,10 +177,54 @@ namespace GGScale
             }
         }
 
-        private static GGScaleException ConnectionFailure(Exception inner) =>
-            GGScaleException.HasCertificateFailure(inner)
-                ? new GGScaleException(GGFailureKind.Connection, GGScaleException.CertificateErrorCode, inner.Message, inner)
-                : new GGScaleException(GGFailureKind.Connection, "connection_error", inner.Message, inner);
+        internal static GGScaleException ConnectionFailure(Exception inner)
+        {
+            if (GGScaleException.HasCertificateFailure(inner))
+            {
+                return new GGScaleException(GGFailureKind.Connection, GGScaleException.CertificateErrorCode, inner.Message, inner);
+            }
+            var code = HostNotFound(inner) ? GGScaleException.HostNotFoundCode
+                : NotSent(inner) ? GGScaleException.NotSentCode
+                : "connection_error";
+            return new GGScaleException(GGFailureKind.Connection, code, inner.Message, inner);
+        }
+
+        /// <summary>
+        /// True only when the failure proves no request bytes were sent: the
+        /// handler wraps a connect-phase socket error directly in the
+        /// HttpRequestException (temporary DNS failure, refused, no route). A failure
+        /// on an open connection comes through an IOException, so it never
+        /// matches. A connect timeout cannot be told apart from a slow
+        /// response, so it does not match either.
+        /// </summary>
+        private static bool NotSent(Exception ex)
+        {
+            if (!(ex is HttpRequestException) || !(ex.InnerException is System.Net.Sockets.SocketException socket))
+            {
+                return false;
+            }
+            switch (socket.SocketErrorCode)
+            {
+                case System.Net.Sockets.SocketError.TryAgain:
+                case System.Net.Sockets.SocketError.ConnectionRefused:
+                case System.Net.Sockets.SocketError.HostUnreachable:
+                case System.Net.Sockets.SocketError.NetworkUnreachable:
+                case System.Net.Sockets.SocketError.NetworkDown:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// True when the host name does not exist (HostNotFound, NoData). The
+        /// request was never sent, but a retry cannot help.
+        /// </summary>
+        private static bool HostNotFound(Exception ex) =>
+            ex is HttpRequestException &&
+            ex.InnerException is System.Net.Sockets.SocketException socket &&
+            (socket.SocketErrorCode == System.Net.Sockets.SocketError.HostNotFound ||
+             socket.SocketErrorCode == System.Net.Sockets.SocketError.NoData);
 
         private GGScaleException AttemptTimeout(Exception inner) =>
             new GGScaleException(
@@ -269,6 +313,10 @@ namespace GGScale
             if (!string.IsNullOrEmpty(request.RequestId))
             {
                 httpReq.Headers.TryAddWithoutValidation("X-Request-Id", request.RequestId);
+            }
+            foreach (var kv in request.Headers)
+            {
+                httpReq.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
             }
             return httpReq;
         }

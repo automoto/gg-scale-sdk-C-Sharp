@@ -23,7 +23,17 @@ namespace GGScale
         /// <summary>A success response could not be decoded, or a size limit was exceeded.</summary>
         Decode = 4,
 
-        /// <summary>A WebSocket upgrade was rejected before the connection opened.</summary>
+        /// <summary>
+        /// A WebSocket connect failed: the upgrade was rejected before the
+        /// connection opened.
+        /// </summary>
         Handshake = 5,
+
+        /// <summary>
+        /// An open WebSocket connection dropped and the client stopped: the
+        /// close was terminal, or the reconnect attempts ran out. See
+        /// <see cref="GGScaleException.CloseCode"/>.
+        /// </summary>
+        ConnectionClosed = 6,
     }
 }
