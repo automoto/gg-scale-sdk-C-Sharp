@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +12,7 @@ namespace GGScale
     /// </summary>
     public sealed class RelayCredentials
     {
-        internal RelayCredentials(string username, string password, long ttl, string realm, IReadOnlyList<string> urls, IReadOnlyList<string> stunUrls)
+        internal RelayCredentials(string username, string password, long ttl, string realm, IReadOnlyList<string> urls, IReadOnlyList<string> stunUrls, string region)
         {
             Username = username;
             Password = password;
@@ -19,6 +20,7 @@ namespace GGScale
             Realm = realm;
             Urls = urls;
             StunUrls = stunUrls;
+            Region = region;
         }
 
         /// <summary>TURN username.</summary>
@@ -39,6 +41,12 @@ namespace GGScale
         /// <summary>STUN server URLs for direct connectivity checks; empty when none.</summary>
         public IReadOnlyList<string> StunUrls { get; }
 
+        /// <summary>
+        /// The region the relay URLs were chosen from, or empty when they span
+        /// regions (no region requested, or none eligible in it).
+        /// </summary>
+        public string Region { get; }
+
         internal static RelayCredentials FromJson(JsonValue v)
         {
             return new RelayCredentials(
@@ -47,7 +55,8 @@ namespace GGScale
                 v.OptLong("ttl"),
                 v.OptString("realm") ?? string.Empty,
                 StringList(v, "urls"),
-                StringList(v, "stun_urls"));
+                StringList(v, "stun_urls"),
+                v.OptString("region") ?? string.Empty);
         }
 
         private static List<string> StringList(JsonValue v, string key)
@@ -65,6 +74,24 @@ namespace GGScale
         }
     }
 
+    /// <summary>Optional parameters for a relay credential request.</summary>
+    public sealed class RelayCredentialsRequest
+    {
+        /// <summary>
+        /// Scopes the request to a match: the server verifies the caller is in
+        /// that match's roster (IsForbidden otherwise).
+        /// </summary>
+        public string? MatchId { get; set; }
+
+        /// <summary>
+        /// Preferred relay region, for example "us-east", matched
+        /// case-insensitively. When it has no eligible relay, the server
+        /// returns relays from every region and sets
+        /// <see cref="RelayCredentials.Region"/> to empty.
+        /// </summary>
+        public string? Region { get; set; }
+    }
+
     /// <summary>
     /// POST /v1/relay/credentials. Reach it via
     /// <see cref="GGScaleClient.Relay"/>.
@@ -80,7 +107,7 @@ namespace GGScale
         /// player. Requires a player session and the p2p_relay key scope.
         /// </summary>
         public Task<RelayCredentials> GetCredentialsAsync(CancellationToken cancellationToken = default) =>
-            GetCredentialsAsync(null, cancellationToken);
+            GetCredentialsAsync(new RelayCredentialsRequest(), cancellationToken);
 
         /// <summary>
         /// Returns a fresh TURN credential pair. When <paramref name="matchId"/>
@@ -89,20 +116,84 @@ namespace GGScale
         /// prove match membership. Requires a player session and the p2p_relay
         /// key scope.
         /// </summary>
-        public async Task<RelayCredentials> GetCredentialsAsync(string? matchId, CancellationToken cancellationToken = default)
+        public Task<RelayCredentials> GetCredentialsAsync(string? matchId, CancellationToken cancellationToken = default) =>
+            GetCredentialsAsync(new RelayCredentialsRequest { MatchId = matchId }, cancellationToken);
+
+        /// <summary>
+        /// Returns a fresh TURN credential pair for <paramref name="request"/>
+        /// (match scope and preferred region). When no relay is eligible the
+        /// server answers 503 with Retry-After; the request is retried within
+        /// the client's retry policy, because minting credentials changes no
+        /// server state. Requires a player session and the p2p_relay key scope.
+        /// </summary>
+        public async Task<RelayCredentials> GetCredentialsAsync(RelayCredentialsRequest request, CancellationToken cancellationToken = default)
         {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
             var req = new GGRequest
             {
                 Method = "POST",
                 Path = "/v1/relay/credentials",
                 Operation = "POST /v1/relay/credentials",
+                Idempotent = true,
             };
-            if (!string.IsNullOrEmpty(matchId))
+            if (!string.IsNullOrEmpty(request.MatchId))
             {
-                req.AddQuery("match_id", matchId!);
+                req.AddQuery("match_id", request.MatchId!);
+            }
+            if (!string.IsNullOrEmpty(request.Region))
+            {
+                req.AddQuery("region", request.Region!);
             }
             var resp = await _client.CallProtectedAsync(req, cancellationToken).ConfigureAwait(false);
             return RelayCredentials.FromJson(resp);
+        }
+
+        private static readonly TimeSpan RetryMin = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan RetryMax = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Fetches credentials now and again at 80% of each TTL, passing every
+        /// new set to <paramref name="onCredentials"/> until
+        /// <paramref name="cancellationToken"/> is cancelled. Update the ICE
+        /// servers of your peer connections there: the relay refuses an
+        /// allocation refresh signed with an expired credential, so a session
+        /// that keeps its first credentials loses its relay within minutes.
+        /// Renewed credentials keep controlling the same allocation. Failures
+        /// that can pass (connection errors, timeouts, 408, 429, 502, 503, 504)
+        /// are retried with backoff, honoring Retry-After; any other failure is
+        /// thrown. Cancellation throws <see cref="OperationCanceledException"/>.
+        /// </summary>
+        public async Task KeepFreshAsync(Action<RelayCredentials> onCredentials, RelayCredentialsRequest? request = null, CancellationToken cancellationToken = default)
+        {
+            if (onCredentials == null)
+            {
+                throw new ArgumentNullException(nameof(onCredentials));
+            }
+            var clock = _client.ClientClock;
+            var backoff = RetryMin;
+            while (true)
+            {
+                TimeSpan wait;
+                try
+                {
+                    var creds = await GetCredentialsAsync(request ?? new RelayCredentialsRequest(), cancellationToken).ConfigureAwait(false);
+                    onCredentials(creds);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    backoff = RetryMin;
+                    var refresh = TimeSpan.FromSeconds(creds.Ttl * 0.8);
+                    wait = refresh > RetryMin ? refresh : RetryMin;
+                }
+                catch (GGScaleException ex) when (ex.IsRetryable && !cancellationToken.IsCancellationRequested)
+                {
+                    wait = ex.RetryAfter ?? backoff;
+                    var doubled = TimeSpan.FromTicks(backoff.Ticks * 2);
+                    backoff = doubled < RetryMax ? doubled : RetryMax;
+                }
+                await clock.DelayAsync(wait, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 }
