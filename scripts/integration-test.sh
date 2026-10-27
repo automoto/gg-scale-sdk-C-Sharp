@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Brings up the integration stack (postgres + ggscale pulled from GHCR),
-# seeds it, runs the SDK integration tests, and tears the stack down.
+# Brings up the integration stack (postgres, ggscale and a relay node pulled
+# from GHCR), seeds it, registers the relay, runs the SDK integration tests,
+# and tears the stack down.
 #
 #   KEEP_STACK=1            leave the stack running for debugging
 #   GGSCALE_IMAGE=<image>   test another server image
@@ -39,6 +40,31 @@ fi
 # Healthy server ⇒ migrations applied; seed tenant/project/keys directly.
 "${COMPOSE[@]}" exec -T postgres \
     psql -q -v ON_ERROR_STOP=1 -U ggscale -d ggscale -f /seed.sql
+
+# Register the relay node the way an operator does, then wait for the
+# registry probe (every 10s) to mark it eligible for credentials.
+ADMIN=(-H "Authorization: Bearer integration-platform-admin-token-0123456789")
+NODES_URL="${BASE_URL}/v1/admin/relay-nodes"
+if ! curl -fsS "${ADMIN[@]}" "$NODES_URL" | grep -q 'http://relay:9091/lifecycle'; then
+    curl -fsS "${ADMIN[@]}" -H 'Content-Type: application/json' -X POST "$NODES_URL" \
+        -d '{"region":"it-east","turn_urls":["turn:127.0.0.1:13479?transport=udp"],"lifecycle_url":"http://relay:9091/lifecycle"}' \
+        >/dev/null
+fi
+echo "waiting for the relay node to become eligible ..."
+eligible=""
+for _ in $(seq 1 30); do
+    if curl -fsS "${ADMIN[@]}" "$NODES_URL" | grep -q '"eligible":true'; then
+        eligible=1
+        break
+    fi
+    sleep 1
+done
+if [ -z "$eligible" ]; then
+    echo "relay node never became eligible:" >&2
+    curl -sS "${ADMIN[@]}" "$NODES_URL" >&2
+    "${COMPOSE[@]}" logs relay >&2
+    exit 1
+fi
 
 GGSCALE_IT_BASE_URL="$BASE_URL" \
     dotnet test tests/GGScale.IntegrationTests -c Release --nologo
