@@ -85,6 +85,9 @@ namespace GGScale
         private readonly Action<Session?>? _onSessionUpdate;
         private readonly bool _ownsTransport;
         private readonly IGGClock _clock;
+
+        /// <summary>The client's time source, for services that wait (relay credential refresh).</summary>
+        internal IGGClock ClientClock => _clock;
         private readonly ITransport _rawTransport;
         private readonly RetryingTransport _retrying;
         private readonly IGGScaleLogger? _logger;

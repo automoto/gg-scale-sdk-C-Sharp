@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
 using Xunit;
@@ -460,6 +461,98 @@ namespace GGScale.Tests
 
             Assert.Equal("/v1/relay/credentials", ft.LastRequest!.Path);
             Assert.Equal("mm_room", ft.LastRequest.QueryValue("match_id"));
+        }
+
+        private static JsonValue Creds(long ttl, string region = "") => JsonValue.NewObject()
+            .Set("username", JsonValue.Of("u")).Set("password", JsonValue.Of("p"))
+            .Set("ttl", JsonValue.Of(ttl)).Set("realm", JsonValue.Of("ggscale"))
+            .Set("region", JsonValue.Of(region));
+
+        private static GGScaleClient ClientWithClock(FakeTransport ft, FakeClock clock)
+        {
+            var client = new GGScaleClient(new GGScaleClientOptions { ApiKey = "pk", Transport = ft, Clock = clock });
+            client.SetSession(new Session("tok", "ref", 1, clock.UtcNow.AddHours(1)));
+            return client;
+        }
+
+        [Fact]
+        public async Task GetCredentials_with_region_adds_query_and_parses_served_region()
+        {
+            var ft = new FakeTransport { Respond = _ => Creds(300, "us-east") };
+            var c = TestClients.WithSession(ft);
+
+            var creds = await c.Relay.GetCredentialsAsync(new RelayCredentialsRequest { Region = "us-east", MatchId = "m1" });
+
+            Assert.Equal("us-east", ft.LastRequest!.QueryValue("region"));
+            Assert.Equal("m1", ft.LastRequest.QueryValue("match_id"));
+            Assert.Equal("us-east", creds.Region);
+        }
+
+        [Fact]
+        public async Task GetCredentials_marks_the_request_safe_to_retry()
+        {
+            var ft = new FakeTransport { Respond = _ => Creds(300) };
+            var c = TestClients.WithSession(ft);
+
+            await c.Relay.GetCredentialsAsync();
+
+            Assert.True(ft.LastRequest!.Idempotent);
+        }
+
+        [Fact]
+        public async Task KeepFresh_refetches_at_80_percent_of_the_ttl()
+        {
+            var clock = new FakeClock();
+            var ft = new FakeTransport { Respond = _ => Creds(300) };
+            using var c = ClientWithClock(ft, clock);
+            using var cts = new CancellationTokenSource();
+            var calls = 0;
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                c.Relay.KeepFreshAsync(
+                    _ =>
+                    {
+                        if (++calls == 3)
+                        {
+                            cts.Cancel();
+                        }
+                    },
+                    null,
+                    cts.Token));
+
+            Assert.Equal(new[] { TimeSpan.FromSeconds(240), TimeSpan.FromSeconds(240) }, clock.Delays);
+        }
+
+        [Fact]
+        public async Task KeepFresh_waits_retry_after_when_no_relay_is_eligible()
+        {
+            var clock = new FakeClock();
+            var ft = new FakeTransport();
+            ft.EnqueueError(new GGScaleException(GGFailureKind.HttpError, "service_unavailable", "no eligible relay")
+            {
+                Status = 503,
+                RetryAfter = TimeSpan.FromSeconds(10),
+            });
+            ft.EnqueueResult(Creds(300));
+            using var c = ClientWithClock(ft, clock);
+            using var cts = new CancellationTokenSource();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                c.Relay.KeepFreshAsync(_ => cts.Cancel(), null, cts.Token));
+
+            Assert.Equal(new[] { TimeSpan.FromSeconds(10) }, clock.Delays);
+        }
+
+        [Fact]
+        public async Task KeepFresh_throws_on_a_permanent_error()
+        {
+            var ft = new FakeTransport();
+            ft.EnqueueError(new GGScaleException(GGFailureKind.HttpError, "forbidden", "forbidden") { Status = 403 });
+            using var c = ClientWithClock(ft, new FakeClock());
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(() => c.Relay.KeepFreshAsync(_ => { }));
+
+            Assert.True(ex.IsForbidden);
         }
     }
 

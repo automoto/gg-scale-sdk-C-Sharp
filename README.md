@@ -100,7 +100,7 @@ Other login strategies: `EmailPasswordAuth`, `CustomTokenAuth`, `SteamAuth`, and
 | `Matchmaker` | `CreateTicketAsync`, `GetTicketAsync`, `CancelTicketAsync`, `WaitForMatchAsync`, `ConnectP2PAsync` |
 | `Parties` | `CreateAsync`, `CurrentAsync`, `GetAsync`, `UpdateAsync`, `DisbandAsync`, `HeartbeatAsync`, `JoinByCodeAsync`, `LeaveAsync`, `SetReadyAsync`, `KickAsync`, `CreateCodeAsync`, `RevokeCodeAsync`, `InviteFriendAsync`, `ListInvitesAsync`, `AcceptInviteAsync`, `DeclineInviteAsync`, `QueueAsync`, `CancelQueueAsync`, `RematchAsync`, `WatchAsync`, `WaitForMatchAsync` |
 | `Fleets` | `ListServersAsync` (`SendHeartbeatAsync` is obsolete; use `Server.FleetHeartbeatAsync`) |
-| `Relay` | `GetCredentialsAsync` |
+| `Relay` | `GetCredentialsAsync` (match scope, preferred region), `KeepFreshAsync` |
 | `Realtime` | `CreateTicketAsync` (one-time WebSocket ticket) |
 | `Server` | `VerifySessionAsync`, `FleetHeartbeatAsync`, `SubmitScoreAsync`, `PlayerRemoteAddrsAsync`, `GetPlayerStorageAsync`, `PutPlayerStorageAsync`, `ListPlayerStorageAsync`, `ListAllStorageAsync` (secret API key) |
 | `Health` | `GetAsync` |
@@ -165,6 +165,47 @@ await foreach (var ev in member.Parties.WatchAsync(party.Id, cancellationToken: 
 - `JoinByCodeAsync` throws with `IsCodeCooldown` after too many wrong codes. Wait for the server-set `RetryAfter`.
 - `ListInvitesAsync` is the source of truth for invites. Inviting a friend who already has a pending invite sends no new `party_invite` event.
 - `PartyMember.Attributes` come back exactly as the member sent them, HTML included. Escape them before you display them.
+
+## Relay credentials
+
+`Relay.GetCredentialsAsync` returns short-lived TURN credentials (about 5
+minutes) and the TURN URLs of the relays that take new sessions. Pass a
+`RelayCredentialsRequest` with `Region = "us-east"` to prefer nearby relays;
+`RelayCredentials.Region` says which region was served, or is empty when the
+URLs span regions. When no relay is available the server answers 503 with
+`RetryAfter`, and the call is retried within the client's retry policy.
+
+Keep credentials fresh for the whole session. The relay refuses an allocation
+refresh signed with an expired credential, so a session that keeps its first
+credentials loses its relay after about 10 minutes. `KeepFreshAsync` fetches
+new credentials at 80% of each TTL and passes them to your callback, which
+updates the peer connection's ICE servers:
+
+```csharp
+_ = client.Relay.KeepFreshAsync(
+    creds => UpdateIceServers(creds.Urls, creds.Username, creds.Password),
+    new RelayCredentialsRequest { Region = "us-east" },
+    cancellationToken);
+```
+
+### Recover from a relay restart (ICE restart)
+
+Relays are replaced by draining: a drained relay refuses new allocations and
+keeps current ones until a deadline, then stops. A session still on it at the
+deadline loses its relayed path. Recover it with an ICE restart over the
+session's signals mailbox:
+
+1. Start when the peer connection's ICE state is `failed`, or `disconnected`
+   for more than 3 seconds.
+2. Get fresh credentials (or use the latest from `KeepFreshAsync`) and set them
+   as the ICE servers. They list only relays that take new sessions.
+3. Only the peer with the lower player ID creates an ICE-restart offer and
+   sends it as `GameSessionSignalKind.RestartOffer`. The other peer answers
+   with `GameSessionSignalKind.RestartAnswer`. This keeps both peers from
+   restarting at once.
+4. Retry with backoff, at most 3 times, then report the peer as lost.
+5. Count signals: the mailbox allows 30 signals per minute per sender per
+   session.
 
 ## Defaults
 

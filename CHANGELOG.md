@@ -3,6 +3,27 @@
 All notable changes to the GGScale C# SDK are documented here. The project
 is pre-1.0; minor versions may contain breaking changes until v1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- `RelayCredentialsRequest` (match scope and preferred `Region`) for
+  `Relay.GetCredentialsAsync`. `RelayCredentials.Region` reports the region
+  served, or empty when the URLs span regions.
+- `Relay.KeepFreshAsync` fetches relay credentials again at 80% of each TTL
+  and passes them to a callback, retrying transient failures with backoff and
+  honoring `RetryAfter`. The relay refuses a refresh signed with an expired
+  credential, so long sessions need this.
+- README: relay credentials section and an ICE restart recipe for sessions
+  whose relay was drained, using `GameSessionSignalKind.RestartOffer` and
+  `RestartAnswer`.
+
+### Changed
+
+- `Relay.GetCredentialsAsync` is retried on a 503 "no eligible relay" answer
+  (and other retryable failures), because minting credentials changes no
+  server state.
+
 ## [0.3.0]
 
 Synchronizes the SDK with ggscale server **v0.9.71**: player data deletion,
