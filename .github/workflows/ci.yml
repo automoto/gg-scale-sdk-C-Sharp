@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 concurrency:
@@ -17,6 +18,21 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
 
 jobs:
+
+  version:
+    name: Tag matches version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Compare tag with GGScale.csproj and SdkVersion
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          grep -qF "<Version>$want</Version>" src/GGScale/GGScale.csproj ||
+            { echo "::error::GGScale.csproj <Version> is not $want"; exit 1; }
+          grep -qF "Value = \"$want\";" src/GGScale/SdkVersion.cs ||
+            { echo "::error::SdkVersion.Value is not $want"; exit 1; }
 
   lint-build-test:
     name: Lint, build, and unit tests
