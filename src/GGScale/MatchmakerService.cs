@@ -519,9 +519,38 @@ namespace GGScale
             }, cancellationToken);
         }
 
+        // CreateTicketReplacingActiveAsync creates a ticket. If the player already
+        // has an active ticket, it cancels that ticket and creates the ticket
+        // again, once. Only WaitForMatchAsync uses it: CreateTicketAsync still
+        // throws IsTicketAlreadyActive.
+        private async Task<Ticket> CreateTicketReplacingActiveAsync(MatchRequest request, CancellationToken cancellationToken)
+        {
+            long activeId;
+            try
+            {
+                return await CreateTicketAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch (GGScaleException e) when (e.IsTicketAlreadyActive && e.ActiveTicketId != 0)
+            {
+                activeId = e.ActiveTicketId;
+            }
+
+            try
+            {
+                await CancelTicketAsync(activeId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (GGScaleException e) when (e.IsNotFound || e.IsConflict)
+            {
+                // The ticket already ended, so the create can go on.
+            }
+            return await CreateTicketAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
         /// <summary>
         /// Creates a ticket and waits until it is matched, returning the
-        /// unified result for any mode. It combines the realtime push with
+        /// unified result for any mode. If the player already has an active
+        /// ticket (for example after a crash), it cancels that ticket and
+        /// creates a new one, once. It combines the realtime push with
         /// periodic authenticated ticket polling, so a dropped WebSocket still
         /// returns the persisted match before its TTL. The socket is dialed
         /// BEFORE the ticket is created (a late subscriber would miss the
@@ -556,7 +585,7 @@ namespace GGScale
 
             try
             {
-                var ticket = await CreateTicketAsync(request, cancellationToken).ConfigureAwait(false);
+                var ticket = await CreateTicketReplacingActiveAsync(request, cancellationToken).ConfigureAwait(false);
                 if (TryTerminal(ticket, out var immediate, out var immediateFailure))
                 {
                     return immediateFailure != null ? throw immediateFailure : immediate!;

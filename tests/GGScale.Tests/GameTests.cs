@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -318,6 +319,43 @@ namespace GGScale.Tests
             Assert.Equal("match_only", result.Mode);
             Assert.Equal(7L, result.HostPlayerId);
             Assert.Equal(2, result.Users.Count);
+        }
+
+        [Fact]
+        public async Task WaitForMatch_replaces_an_active_ticket()
+        {
+            var creates = 0;
+            var ft = new FakeTransport
+            {
+                Respond = req =>
+                {
+                    if (req.Method == "POST" && creates++ == 0)
+                    {
+                        throw new GGScaleException(
+                            409, string.Empty, "ticket_already_active", null, 0,
+                            new[] { new GGErrorDetail("player already has an active ticket", "active_ticket_id", JsonValue.Of(55L)) });
+                    }
+                    if (req.Method == "DELETE")
+                    {
+                        return JsonValue.NewObject();
+                    }
+                    return JsonValue.NewObject()
+                        .Set("id", JsonValue.Of(7L)).Set("status", JsonValue.Of("matched")).Set("mode", JsonValue.Of("match_only"))
+                        .Set("match_id", JsonValue.Of("mm_xy")).Set("host_player_id", JsonValue.Of(7L))
+                        .Set("created_at", JsonValue.Of("2026-07-06T10:00:00Z"))
+                        .Set("users", JsonValue.NewArray().Add(JsonValue.NewObject().Set("player_id", JsonValue.Of(7L))));
+                },
+            };
+            var c = new GGScaleClient(new GGScaleClientOptions { ApiKey = "k", BaseUrl = "http://api.test", Transport = ft });
+            c.SetSession(Canned.Live());
+            var adapter = new FakeSocketAdapter();
+            adapter.EndStream();
+
+            await c.Matchmaker.WaitForMatchAsync(new MatchRequest { Mode = MatchMode.MatchOnly }, adapter);
+
+            Assert.Equal(
+                "POST /v1/matchmaker/tickets | DELETE /v1/matchmaker/tickets/55 | POST /v1/matchmaker/tickets",
+                string.Join(" | ", ft.Requests.Where(r => r.Path.StartsWith("/v1/matchmaker/", StringComparison.Ordinal)).Select(r => r.Method + " " + r.Path)));
         }
 
         [Fact]
