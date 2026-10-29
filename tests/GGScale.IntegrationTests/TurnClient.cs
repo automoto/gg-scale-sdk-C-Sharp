@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -54,10 +55,14 @@ namespace GGScale.IntegrationTests
             _username = username;
         }
 
-        public static async Task<TurnClient> AllocateAsync(RelayCredentials creds, CancellationToken ct)
+        /// <summary>Allocates on <paramref name="url"/>, which must be one of creds.Urls.</summary>
+        public static async Task<TurnClient> AllocateAsync(RelayCredentials creds, string url, CancellationToken ct)
         {
+            if (!creds.Urls.Contains(url))
+            {
+                throw new ArgumentException($"{url} is not in the credentials' URLs", nameof(url));
+            }
             // "turn:127.0.0.1:13479?transport=udp" -> 127.0.0.1:13479
-            var url = creds.Urls[0];
             var server = IPEndPoint.Parse(url.Substring("turn:".Length).Split('?')[0]);
             var udp = new UdpClient(AddressFamily.InterNetwork);
             udp.Connect(server);

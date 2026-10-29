@@ -246,9 +246,9 @@ To use a local spec, run `make openapi-check SPEC=../../ggscale/openapi.yaml`. S
 
 ### Integration tests
 
-`make test-integration` starts Postgres, `ghcr.io/automoto/gg-scale:v0.9.75` and one TURN relay node from the same image with docker compose (set `GGSCALE_IMAGE` to use another image). It seeds a tenant, a project, and API keys from `integration/seed.sql`, registers the relay through the admin API, runs `tests/GGScale.IntegrationTests` against `127.0.0.1:18081`, and then stops the stack. Set `KEEP_STACK=1` to leave it running.
+`make test-integration` starts Postgres, `ghcr.io/automoto/gg-scale:v0.9.75` and two TURN relay nodes in one region from the same image with docker compose (set `GGSCALE_IMAGE` to use another image). It seeds a tenant, a project, and API keys from `integration/seed.sql`, registers the relays through the admin API, runs `tests/GGScale.IntegrationTests` against `127.0.0.1:18081`, and then stops the stack. Set `KEEP_STACK=1` to leave it running.
 
-`E2ERelayIntegrationTests` follows the connect flow of a two-player WebRTC game: anonymous login, a game session match, relay credentials for the match and region, an offer and an answer over game session signals, and data sent through the relay. `TurnClient.cs` is a small TURN client for that test only.
+`E2ERelayIntegrationTests` follows the connect flow of a two-player WebRTC game: anonymous login, a game session match, relay credentials for the match and region, an offer and an answer over game session signals, and data sent through the relay. A second test drains that relay and recovers the session through the other one with `restart_offer` and `restart_answer` (the ICE restart recipe above). `TurnClient.cs` is a small TURN client for these tests only.
 
 ## License
 
