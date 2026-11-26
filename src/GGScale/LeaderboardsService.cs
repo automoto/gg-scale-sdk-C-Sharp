@@ -237,6 +237,36 @@ namespace GGScale
         }
     }
 
+    /// <summary>One page of the project's leaderboards; NextCursor is empty on the last page.</summary>
+    public sealed class LeaderboardsPage
+    {
+        internal LeaderboardsPage(IReadOnlyList<LeaderboardInfo> leaderboards, string nextCursor)
+        {
+            Leaderboards = leaderboards;
+            NextCursor = nextCursor;
+        }
+
+        /// <summary>The page's leaderboards, sorted by name.</summary>
+        public IReadOnlyList<LeaderboardInfo> Leaderboards { get; }
+
+        /// <summary>Cursor for the next page; empty when done.</summary>
+        public string NextCursor { get; }
+
+        internal static LeaderboardsPage FromJson(JsonValue v)
+        {
+            var boards = new List<LeaderboardInfo>();
+            var arr = v.Opt("leaderboards");
+            if (arr != null)
+            {
+                foreach (var b in arr.Items)
+                {
+                    boards.Add(LeaderboardInfo.FromJson(b));
+                }
+            }
+            return new LeaderboardsPage(boards, v.OptString("next_cursor") ?? string.Empty);
+        }
+    }
+
     /// <summary>Around-me result; SelfRank is -1 when the caller has no score.</summary>
     public sealed class AroundMeResult
     {
@@ -359,25 +389,72 @@ namespace GGScale
             return new AroundMeResult(ParseEntries(resp), selfRank);
         }
 
-        /// <summary>Lists the project's leaderboards with their configuration.</summary>
+        /// <summary>
+        /// Lists every leaderboard of the project with its configuration,
+        /// reading all pages. Use <see cref="ListAllAsync"/> to stop early or
+        /// <see cref="ListPageAsync"/> for one page.
+        /// </summary>
         public async Task<IReadOnlyList<LeaderboardInfo>> ListAsync(CancellationToken cancellationToken = default)
         {
-            var resp = await _client.CallProtectedAsync(new GGRequest
+            var boards = new List<LeaderboardInfo>();
+            await foreach (var board in ListAllAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                boards.Add(board);
+            }
+            return boards;
+        }
+
+        /// <summary>
+        /// Reads one page of the project's leaderboards, sorted by name. Pass
+        /// limit 0 for the server default (100, also the cap).
+        /// </summary>
+        public async Task<LeaderboardsPage> ListPageAsync(int limit = 0, string? cursor = null, CancellationToken cancellationToken = default)
+        {
+            var req = new GGRequest
             {
                 Method = "GET",
                 Path = "/v1/leaderboards",
                 Operation = "GET /v1/leaderboards",
-            }, cancellationToken).ConfigureAwait(false);
-            var boards = new List<LeaderboardInfo>();
-            var arr = resp.Opt("leaderboards");
-            if (arr != null)
+            };
+            if (limit > 0)
             {
-                foreach (var b in arr.Items)
-                {
-                    boards.Add(LeaderboardInfo.FromJson(b));
-                }
+                req.AddQuery("limit", limit.ToString(CultureInfo.InvariantCulture));
             }
-            return boards;
+            if (!string.IsNullOrEmpty(cursor))
+            {
+                req.AddQuery("cursor", cursor!);
+            }
+            var resp = await _client.CallProtectedAsync(req, cancellationToken).ConfigureAwait(false);
+            return LeaderboardsPage.FromJson(resp);
+        }
+
+        /// <summary>
+        /// Iterates the project's leaderboards across every page, sorted by
+        /// name. It reads pages only when the enumeration needs them. Pass
+        /// limit 0 for the server default page size.
+        /// </summary>
+        public async IAsyncEnumerable<LeaderboardInfo> ListAllAsync(
+            int limit = 0,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            string? cursor = null;
+            while (true)
+            {
+                var page = await ListPageAsync(limit, cursor, cancellationToken).ConfigureAwait(false);
+                foreach (var board in page.Leaderboards)
+                {
+                    yield return board;
+                }
+                if (page.NextCursor.Length == 0)
+                {
+                    yield break;
+                }
+                if (page.NextCursor == cursor)
+                {
+                    throw new GGScaleException(GGFailureKind.Decode, "cursor_did_not_advance", "the leaderboard list cursor did not advance");
+                }
+                cursor = page.NextCursor;
+            }
         }
 
         /// <summary>

@@ -86,6 +86,16 @@ namespace GGScale.IntegrationTests
         public LeaderboardDiscoveryIntegrationTests(ItFixture fx) => _fx = fx;
 
         [Fact]
+        public async Task Leaderboards_ListPage_follows_the_cursor()
+        {
+            var first = await _fx.Player1.Leaderboards.ListPageAsync(limit: 1);
+            var second = await _fx.Player1.Leaderboards.ListPageAsync(limit: 1, cursor: first.NextCursor);
+
+            Assert.Equal("integration,integration-paging|",
+                Assert.Single(first.Leaderboards).Name + "," + Assert.Single(second.Leaderboards).Name + "|" + second.NextCursor);
+        }
+
+        [Fact]
         public async Task Leaderboards_list_periods_and_server_submit()
         {
             var boards = await _fx.Player1.Leaderboards.ListAsync();

@@ -12,7 +12,7 @@ build:
 # openapi-check runs ContractTests against the spec of the server tag
 # SPEC_REF. It reads the network, so it is not part of `check`. Use a
 # local spec with SPEC=../../ggscale/openapi.yaml.
-SPEC_REF ?= v0.9.71
+SPEC_REF ?= v0.9.91
 SPEC ?= https://raw.githubusercontent.com/automoto/gg-scale/$(SPEC_REF)/openapi.yaml
 CONTRACT_TEST = dotnet test tests/GGScale.Tests -c Release --nologo --filter "FullyQualifiedName~ContractTests" --logger "console;verbosity=detailed"
 
