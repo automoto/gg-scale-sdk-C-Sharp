@@ -89,7 +89,7 @@ Other login strategies: `EmailPasswordAuth`, `CustomTokenAuth`, `SteamAuth`, and
 | `Auth` | `SignupAsync`, `VerifyAsync`, `ResendVerificationAsync`, `RefreshAsync`, `LogoutAsync`, `LinkEmailAsync`, `LinkSteamAsync`, `ChangePasswordAsync`, `RequestPasswordResetAsync`, `ConfirmPasswordResetAsync`, `DisableAsync`, `RequestDeleteAsync`, `CancelDeleteAsync` |
 | `Config` | `GetAsync` (`ETag` / `If-None-Match`, no player login) |
 | `Storage` | `GetAsync`, `PutAsync`, `DeleteAsync`, `ListAsync`, `ListAllAsync` |
-| `Leaderboards` | `ListAsync`, `SubmitAsync`, `SubmitForAsync`, `TopAsync`, `AroundMeAsync`, `FriendsAsync`, `PeriodsAsync`, `ListAllPeriodsAsync`, `PeriodTopAsync` |
+| `Leaderboards` | `ListAsync`, `ListPageAsync`, `ListAllAsync`, `SubmitAsync`, `SubmitForAsync`, `TopAsync`, `AroundMeAsync`, `FriendsAsync`, `PeriodsAsync`, `ListAllPeriodsAsync`, `PeriodTopAsync` |
 | `Profile` | `GetAsync`, `UpdateAsync`, `RegenerateFriendCodeAsync` |
 | `Players` | `GetAsync`, `ResolveAsync`, `ResolveFriendCodeAsync` |
 | `Friends` | `ListAsync`, `ListAllAsync`, `RequestAsync`, `AcceptAsync`, `RejectAsync`, `RemoveAsync`, `BlockAsync`, `UnblockAsync`, `RemoteAddrsAsync` |
@@ -104,6 +104,8 @@ Other login strategies: `EmailPasswordAuth`, `CustomTokenAuth`, `SteamAuth`, and
 | `Realtime` | `CreateTicketAsync` (one-time WebSocket ticket) |
 | `Server` | `VerifySessionAsync`, `FleetHeartbeatAsync`, `SubmitScoreAsync`, `PlayerRemoteAddrsAsync`, `GetPlayerStorageAsync`, `PutPlayerStorageAsync`, `ListPlayerStorageAsync`, `ListAllStorageAsync` (secret API key) |
 | `Health` | `GetAsync` |
+
+The server returns at most 100 leaderboards per page, sorted by name. `Leaderboards.ListAsync` reads every page. Use `ListAllAsync` to enumerate and stop early, or `ListPageAsync(limit, cursor)` to read one page; an empty `NextCursor` means there are no more pages.
 
 Every service is a property of `GGScaleClient`, which is safe for concurrent use. A session refreshes when it is less than 30 seconds from expiry, and a 401 causes one refresh and one retry.
 
@@ -240,13 +242,13 @@ make test-integration  # full-stack tests against a real server (Docker)
 
 ### API contract
 
-`openapi.yaml` in the [gg-scale repository](https://github.com/automoto/gg-scale/blob/main/openapi.yaml) is the only contract for this SDK, and there is no copy here. `make openapi-check` downloads the spec at server tag `SPEC_REF` (currently `v0.9.71`) and runs `ContractTests`. They check that every operation appears as `Operation = "METHOD path"` in `src/GGScale`, that every secret-key operation is in `ServerService.cs`, and that no other operation appears only there. CI runs this check.
+`openapi.yaml` in the [gg-scale repository](https://github.com/automoto/gg-scale/blob/main/openapi.yaml) is the only contract for this SDK, and there is no copy here. `make openapi-check` downloads the spec at server tag `SPEC_REF` (currently `v0.9.91`) and runs `ContractTests`. They check that every operation appears as `Operation = "METHOD path"` in `src/GGScale`, that every secret-key operation is in `ServerService.cs`, and that no other operation appears only there. CI runs this check. Operations whose only security is `ManagementToken` (`/v1/project`, the management API) or `PlatformAdminToken` (`/v1/admin`) are skipped: they serve developer and operator tooling, not game code, so this SDK does not wrap them.
 
 To use a local spec, run `make openapi-check SPEC=../../ggscale/openapi.yaml`. Syncing to a new server release changes only `SPEC_REF`. Without `GGSCALE_SPEC`, `make test` skips the spec check, so unit tests stay offline.
 
 ### Integration tests
 
-`make test-integration` starts Postgres, `ghcr.io/automoto/gg-scale:v0.9.75` and two TURN relay nodes in one region from the same image with docker compose (set `GGSCALE_IMAGE` to use another image). It seeds a tenant, a project, and API keys from `integration/seed.sql`, registers the relays through the admin API, runs `tests/GGScale.IntegrationTests` against `127.0.0.1:18081`, and then stops the stack. Set `KEEP_STACK=1` to leave it running.
+`make test-integration` starts Postgres, `ghcr.io/automoto/gg-scale:v0.9.91` and two TURN relay nodes in one region from the same image with docker compose (set `GGSCALE_IMAGE` to use another image). It seeds a tenant, a project, and API keys from `integration/seed.sql`, registers the relays through the admin API, runs `tests/GGScale.IntegrationTests` against `127.0.0.1:18081`, and then stops the stack. Set `KEEP_STACK=1` to leave it running.
 
 `E2ERelayIntegrationTests` follows the connect flow of a two-player WebRTC game: anonymous login, a game session match, relay credentials for the match and region, an offer and an answer over game session signals, and data sent through the relay. A second test drains that relay and recovers the session through the other one with `restart_offer` and `restart_answer` (the ICE restart recipe above). `TurnClient.cs` is a small TURN client for these tests only.
 

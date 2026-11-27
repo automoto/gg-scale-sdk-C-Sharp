@@ -16,6 +16,10 @@ namespace GGScale.Tests
     {
         private static readonly string[] Methods = { "get", "post", "put", "patch", "delete" };
 
+        // The management and platform-admin APIs serve developer and
+        // operator tooling, not games, so the SDK does not wrap them.
+        private static readonly string[] ToolingSchemes = { "ManagementToken", "PlatformAdminToken" };
+
         private readonly ITestOutputHelper _output;
 
         public ContractTests(ITestOutputHelper output) => _output = output;
@@ -24,6 +28,7 @@ namespace GGScale.Tests
         /// Each spec operation must occur as Operation = "METHOD path" in
         /// src/GGScale. Each operation whose only security is SecretKey must
         /// be in ServerService.cs, and no other operation may be only there.
+        /// Operations guarded only by a tooling scheme are skipped.
         /// </summary>
         [Fact]
         public void OpenApi_operations_have_wrappers_on_the_right_client()
@@ -40,8 +45,14 @@ namespace GGScale.Tests
                 .ToDictionary(f => Path.GetFileName(f), File.ReadAllText);
             var failures = new List<string>();
             var count = 0;
-            foreach (var (operation, secretOnly) in SpecOperations(specPath!))
+            var skipped = 0;
+            foreach (var (operation, secretOnly, toolingOnly) in SpecOperations(specPath!))
             {
+                if (toolingOnly)
+                {
+                    skipped++;
+                    continue;
+                }
                 count++;
                 var needle = "Operation = \"" + operation + "\"";
                 var files = sources.Where(kv => kv.Value.Contains(needle, StringComparison.Ordinal)).Select(kv => kv.Key).ToList();
@@ -59,13 +70,13 @@ namespace GGScale.Tests
                     failures.Add(operation + ": publishable-key operation is only on the server client");
                 }
             }
-            _output.WriteLine(count + " spec operations checked.");
+            _output.WriteLine(count + " spec operations checked, " + skipped + " tooling operations skipped.");
 
             Assert.True(count > 0 && failures.Count == 0,
                 count == 0 ? "the spec has no operations" : string.Join(Environment.NewLine, failures));
         }
 
-        private static IEnumerable<(string Operation, bool SecretOnly)> SpecOperations(string specPath)
+        private static IEnumerable<(string Operation, bool SecretOnly, bool ToolingOnly)> SpecOperations(string specPath)
         {
             var yaml = new YamlStream();
             using (var reader = new StreamReader(specPath))
@@ -83,20 +94,23 @@ namespace GGScale.Tests
                     {
                         continue;
                     }
-                    yield return (method.ToUpperInvariant() + " " + ((YamlScalarNode)path.Key).Value, SecretOnly((YamlMappingNode)op));
+                    var opNode = (YamlMappingNode)op;
+                    yield return (method.ToUpperInvariant() + " " + ((YamlScalarNode)path.Key).Value,
+                        OnlyScheme(opNode, "SecretKey"), OnlyScheme(opNode, ToolingSchemes));
                 }
             }
         }
 
-        /// <summary>True when every security requirement of the operation is the secret key alone.</summary>
-        private static bool SecretOnly(YamlMappingNode op)
+        /// <summary>True when every security requirement of the operation is one of the schemes alone.</summary>
+        private static bool OnlyScheme(YamlMappingNode op, params string[] schemes)
         {
             if (!op.Children.TryGetValue(new YamlScalarNode("security"), out var node) || node is not YamlSequenceNode security || security.Children.Count == 0)
             {
                 return false;
             }
             return security.Children.All(req =>
-                req is YamlMappingNode m && m.Children.Count == 1 && m.Children.ContainsKey(new YamlScalarNode("SecretKey")));
+                req is YamlMappingNode m && m.Children.Count == 1 &&
+                m.Children.Keys.All(k => k is YamlScalarNode name && schemes.Contains(name.Value)));
         }
 
         private static string RepoRoot()

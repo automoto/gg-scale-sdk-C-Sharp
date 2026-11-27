@@ -17,6 +17,8 @@ namespace GGScale.Tests
 
         public string? LastRequestBody { get; private set; }
 
+        public byte[]? LastRequestBytes { get; private set; }
+
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
 
         public string? Body { get; set; }
@@ -32,9 +34,10 @@ namespace GGScale.Tests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastRequest = request;
-            LastRequestBody = request.Content == null
+            LastRequestBytes = request.Content == null
                 ? null
-                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                : await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            LastRequestBody = LastRequestBytes == null ? null : Encoding.UTF8.GetString(LastRequestBytes);
             if (Throw != null)
             {
                 throw Throw;
@@ -98,6 +101,26 @@ namespace GGScale.Tests
 
             Assert.Equal("{\"a\":1}", h.LastRequestBody);
             Assert.Equal("application/json", h.LastRequest!.Content!.Headers.ContentType!.MediaType);
+        }
+
+        // The server refuses invalid UTF-8 and escaped lone surrogates. C#
+        // strings can hold a lone surrogate; the UTF-8 encoder sends it as
+        // U+FFFD, so the body stays valid and the server accepts it.
+        [Fact]
+        public async Task CallAsync_sends_a_lone_surrogate_as_the_replacement_character()
+        {
+            var (t, h) = NewTransport();
+            h.Body = "{}";
+            var req = new GGRequest
+            {
+                Method = "POST",
+                Path = "/v1/x",
+                Body = JsonValue.NewObject().Set("name", JsonValue.Of("a\uD800b")),
+            };
+
+            await t.CallAsync(req, CancellationToken.None);
+
+            Assert.Equal(Encoding.UTF8.GetBytes("{\"name\":\"a\uFFFDb\"}"), h.LastRequestBytes);
         }
 
         [Fact]

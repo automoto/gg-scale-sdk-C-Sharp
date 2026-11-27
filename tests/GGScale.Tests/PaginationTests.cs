@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using GGScale.Json;
@@ -122,6 +123,87 @@ namespace GGScale.Tests
             Assert.Equal("pending", ft.Requests[0].QueryValue("status"));
             Assert.Equal("pending", ft.Requests[1].QueryValue("status"));
             Assert.Equal("n", ft.Requests[1].QueryValue("cursor"));
+        }
+
+        [Fact]
+        public async Task Leaderboards_ListPage_passes_limit_and_cursor()
+        {
+            var ft = new FakeTransport();
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[],\"next_cursor\":\"\"}"));
+            using var client = NewClientWithSession(ft);
+
+            await client.Leaderboards.ListPageAsync(limit: 25, cursor: "weekly");
+
+            Assert.Equal("25,weekly", ft.LastRequest!.QueryValue("limit") + "," + ft.LastRequest.QueryValue("cursor"));
+        }
+
+        [Fact]
+        public async Task Leaderboards_ListPage_returns_next_cursor()
+        {
+            var ft = new FakeTransport();
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[{\"id\":1,\"name\":\"alltime\"}],\"next_cursor\":\"alltime\"}"));
+            using var client = NewClientWithSession(ft);
+
+            var page = await client.Leaderboards.ListPageAsync();
+
+            Assert.Equal("alltime", page.NextCursor);
+        }
+
+        [Fact]
+        public async Task Leaderboards_List_reads_every_page()
+        {
+            var ft = new FakeTransport();
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[{\"id\":1,\"name\":\"alltime\"}],\"next_cursor\":\"alltime\"}"));
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[{\"id\":2,\"name\":\"weekly\"}],\"next_cursor\":\"\"}"));
+            using var client = NewClientWithSession(ft);
+
+            var boards = await client.Leaderboards.ListAsync();
+
+            Assert.Equal("alltime,weekly", string.Join(",", boards.Select(b => b.Name)));
+        }
+
+        [Fact]
+        public async Task Leaderboards_ListAll_sends_the_cursor_for_the_next_page()
+        {
+            var ft = new FakeTransport();
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[],\"next_cursor\":\"alltime\"}"));
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[],\"next_cursor\":\"\"}"));
+            using var client = NewClientWithSession(ft);
+
+            await foreach (var _ in client.Leaderboards.ListAllAsync(limit: 10))
+            {
+            }
+
+            Assert.Equal("alltime", ft.Requests[1].QueryValue("cursor"));
+        }
+
+        [Fact]
+        public async Task Leaderboards_ListAll_stops_fetching_when_enumeration_abandoned()
+        {
+            var ft = new FakeTransport();
+            ft.EnqueueResult(JsonValue.Parse("{\"leaderboards\":[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"b\"}],\"next_cursor\":\"b\"}"));
+            using var client = NewClientWithSession(ft);
+
+            await foreach (var _ in client.Leaderboards.ListAllAsync())
+            {
+                break;
+            }
+
+            Assert.Equal(1, ft.CallCount);
+        }
+
+        [Fact]
+        public async Task Leaderboards_List_throws_when_the_cursor_does_not_advance()
+        {
+            var ft = new FakeTransport
+            {
+                Respond = _ => JsonValue.Parse("{\"leaderboards\":[{\"id\":1,\"name\":\"a\"}],\"next_cursor\":\"a\"}"),
+            };
+            using var client = NewClientWithSession(ft);
+
+            var ex = await Assert.ThrowsAsync<GGScaleException>(() => client.Leaderboards.ListAsync());
+
+            Assert.Equal(GGFailureKind.Decode, ex.Kind);
         }
     }
 }
